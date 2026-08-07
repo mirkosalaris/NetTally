@@ -9,12 +9,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app_folder import AppFolder
 from db import (
     init_db,
+    get_connection,
     load_process_states,
     update_process_states,
     record_usage_deltas,
     query_usage_totals,
     query_usage_by_day
 )
+from collector import fetch_nettop_sample
+from html_generator import generate_html_report
 
 class TestAppFolder(unittest.TestCase):
     def setUp(self):
@@ -25,7 +28,8 @@ class TestAppFolder(unittest.TestCase):
         }
         self.folder.prefix_map = {
             "Google Chrome": "Google Chrome",
-            "Claude": "Claude"
+            "Claude": "Claude",
+            "Code": "Visual Studio Code"
         }
         self.folder.suffix_patterns = [
             " Helper (Renderer)",
@@ -41,6 +45,7 @@ class TestAppFolder(unittest.TestCase):
 
     def test_folding_prefix(self):
         self.assertEqual(self.folder.fold("Claude Helper (GPU)"), "Claude")
+        self.assertEqual(self.folder.fold("Code Helper (Plugin)"), "Visual Studio Code")
 
     def test_folding_unknown(self):
         self.assertEqual(self.folder.fold("CustomProcess"), "CustomProcess")
@@ -59,6 +64,13 @@ class TestDatabaseAndDeltas(unittest.TestCase):
         states = load_process_states(self.db_path)
         self.assertEqual(states, {})
 
+    def test_sqlite_pragmas(self):
+        conn = get_connection(self.db_path)
+        cursor = conn.execute("PRAGMA journal_mode;")
+        row = cursor.fetchone()
+        self.assertEqual(row[0].lower(), "wal")
+        conn.close()
+
     def test_process_state_upsert(self):
         states = {
             (1234, "Chrome"): (100, 200, 1000.0)
@@ -72,18 +84,13 @@ class TestDatabaseAndDeltas(unittest.TestCase):
         day_1 = "2026-08-01"
         day_2 = "2026-08-02"
 
-        # Record day 1 deltas
         record_usage_deltas(self.db_path, day_1, {"Google Chrome": (5000, 1000)})
         record_usage_deltas(self.db_path, day_1, {"Google Chrome": (3000, 500), "Slack": (2000, 100)})
-
-        # Record day 2 deltas
         record_usage_deltas(self.db_path, day_2, {"Google Chrome": (10000, 2000)})
 
-        # Check day 1 query
         by_day = query_usage_by_day(self.db_path, days=30)
-        self.assertEqual(len(by_day), 3) # (day_2, Chrome), (day_1, Chrome), (day_1, Slack)
+        self.assertEqual(len(by_day), 3)
 
-        # Check total query
         totals = query_usage_totals(self.db_path, days=30)
         chrome_total = next(r for r in totals if r["app_name"] == "Google Chrome")
         self.assertEqual(chrome_total["total_bytes_in"], 18000)
@@ -91,7 +98,6 @@ class TestDatabaseAndDeltas(unittest.TestCase):
         self.assertEqual(chrome_total["total_samples"], 3)
 
     def test_day_boundary_isolation(self):
-        # Verify day boundary logic groups synthetic rows correctly into separate days
         day_a = "2026-08-06"
         day_b = "2026-08-07"
 
@@ -103,6 +109,15 @@ class TestDatabaseAndDeltas(unittest.TestCase):
         self.assertEqual(len(app_a_records), 2)
         days = set(r["day"] for r in app_a_records)
         self.assertEqual(days, {day_a, day_b})
+
+    def test_empty_html_generation(self):
+        out_html = os.path.join(self.temp_dir.name, "dashboard.html")
+        path = generate_html_report(self.db_path, days=30, output_path=out_html)
+        self.assertTrue(os.path.exists(path))
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+            self.assertIn("NetTally", content)
+            self.assertIn("No network usage records found", content)
 
 if __name__ == "__main__":
     unittest.main()

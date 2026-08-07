@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import argparse
 import datetime
 import os
@@ -31,7 +32,7 @@ def fetch_nettop_sample() -> List[Tuple[int, str, int, int]]:
     """
     cmd = ["nettop", "-P", "-L", "1", "-x", "-J", "bytes_in,bytes_out"]
     try:
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True, timeout=10)
     except Exception as e:
         print(f"Error running nettop: {e}", file=sys.stderr)
         return []
@@ -41,26 +42,25 @@ def fetch_nettop_sample() -> List[Tuple[int, str, int, int]]:
         return []
 
     samples = []
-    header_found = False
 
     for line in lines:
         line = line.strip()
         if not line:
             continue
         
-        # Check header
+        # Skip header line
         if "bytes_in" in line and "bytes_out" in line:
-            header_found = True
             continue
 
-        parts = [p.strip() for p in line.split(",") if p.strip() != ""]
+        # Split from right to robustly handle process names containing commas
+        parts = line.rstrip(",").rsplit(",", 2)
         if len(parts) < 3:
             continue
 
-        proc_id_str = parts[0]
+        proc_id_str = parts[0].strip()
         try:
-            bytes_in = int(parts[1])
-            bytes_out = int(parts[2])
+            bytes_in = int(parts[1].strip())
+            bytes_out = int(parts[2].strip())
         except ValueError:
             continue
 
@@ -71,7 +71,6 @@ def fetch_nettop_sample() -> List[Tuple[int, str, int, int]]:
                 pid = int(pid_str)
                 samples.append((pid, raw_name, bytes_in, bytes_out))
             else:
-                # If splitting on dot didn't yield a numeric PID, use hash of full string as fallback pid
                 samples.append((hash(proc_id_str) & 0x7fffffff, proc_id_str, bytes_in, bytes_out))
         else:
             samples.append((hash(proc_id_str) & 0x7fffffff, proc_id_str, bytes_in, bytes_out))

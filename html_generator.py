@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import argparse
 import json
 import os
@@ -333,39 +334,36 @@ def generate_html_report(db_path: str, days: int = 30, output_path: str = DEFAUL
     grand_total = sum(r["total_bytes"] or 0 for r in totals)
 
     # Prepare table rows
-    table_rows = []
-    for r in totals:
-        table_rows.append(f"""
-            <tr>
-                <td><strong>{r['app_name']}</strong></td>
-                <td>{format_bytes(r['total_bytes_in'] or 0)}</td>
-                <td>{format_bytes(r['total_bytes_out'] or 0)}</td>
-                <td><span class="badge">{format_bytes(r['total_bytes'] or 0)}</span></td>
-                <td>{r['total_samples'] or 0}</td>
-            </tr>
-        """)
-    table_html = "\n".join(table_rows)
+    if totals:
+        table_rows = []
+        for r in totals:
+            table_rows.append(f"""
+                <tr>
+                    <td><strong>{r['app_name']}</strong></td>
+                    <td>{format_bytes(r['total_bytes_in'] or 0)}</td>
+                    <td>{format_bytes(r['total_bytes_out'] or 0)}</td>
+                    <td><span class="badge">{format_bytes(r['total_bytes'] or 0)}</span></td>
+                    <td>{r['total_samples'] or 0}</td>
+                </tr>
+            """)
+        table_html = "\n".join(table_rows)
+    else:
+        table_html = '<tr><td colspan="5" style="text-align:center; color: var(--text-secondary); padding: 24px;">No network usage records found for this period.</td></tr>'
 
-    # Prepare chart data (stacked bar chart: X axis = days, Datasets = top 10 apps + Other)
-    # Get distinct days sorted ascending
+    # Prepare chart data (stacked bar chart: X axis = days, Datasets = top 8 apps + Other)
     distinct_days = sorted(list(set(r["day"] for r in daily_records)))
+    top_apps = [r["app_name"] for r in totals[:8]] if totals else []
     
-    # Identify top 8 apps by total usage
-    top_apps = [r["app_name"] for r in totals[:8]]
-    
-    # Palette for chart bars
     colors = [
         '#38bdf8', '#818cf8', '#c084fc', '#f472b6',
         '#fb7185', '#34d399', '#fbbf24', '#a3e635', '#94a3b8'
     ]
 
     datasets = []
-    # Build dataset for each top app
     for idx, app in enumerate(top_apps):
         color = colors[idx % len(colors)]
         data = []
         for d in distinct_days:
-            # sum for app on day d
             bytes_sum = sum(r["total_bytes"] for r in daily_records if r["day"] == d and r["app_name"] == app)
             data.append(bytes_sum)
         datasets.append({
@@ -374,17 +372,17 @@ def generate_html_report(db_path: str, days: int = 30, output_path: str = DEFAUL
             "backgroundColor": color
         })
 
-    # "Other" dataset for remaining apps
-    other_data = []
-    for d in distinct_days:
-        bytes_sum = sum(r["total_bytes"] for r in daily_records if r["day"] == d and r["app_name"] not in top_apps)
-        other_data.append(bytes_sum)
-    if any(v > 0 for v in other_data):
-        datasets.append({
-            "label": "Other Apps",
-            "data": other_data,
-            "backgroundColor": colors[-1]
-        })
+    if distinct_days and top_apps:
+        other_data = []
+        for d in distinct_days:
+            bytes_sum = sum(r["total_bytes"] for r in daily_records if r["day"] == d and r["app_name"] not in top_apps)
+            other_data.append(bytes_sum)
+        if any(v > 0 for v in other_data):
+            datasets.append({
+                "label": "Other Apps",
+                "data": other_data,
+                "backgroundColor": colors[-1]
+            })
 
     chart_data = {
         "labels": distinct_days,
