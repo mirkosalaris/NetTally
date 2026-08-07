@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# nettally CLI entry point wrapper
+
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+PYTHON="/usr/bin/env python3"
+
+case "$1" in
+    report)
+        shift
+        $PYTHON "$SCRIPT_DIR/report.py" "$@"
+        ;;
+    html)
+        shift
+        $PYTHON "$SCRIPT_DIR/html_generator.py" --open "$@"
+        ;;
+    run-once)
+        shift
+        $PYTHON "$SCRIPT_DIR/collector.py" --once "$@"
+        ;;
+    run-daemon)
+        shift
+        $PYTHON "$SCRIPT_DIR/collector.py" "$@"
+        ;;
+    status)
+        echo "=== NetTally Service Status ==="
+        launchctl list 2>/dev/null | grep -E "com\.nettally\.daemon" || echo "Service is not currently loaded in launchctl."
+        if [ -f "$HOME/Library/Logs/NetTally/collector.out.log" ]; then
+            echo ""
+            echo "--- Recent Out Log (last 5 lines) ---"
+            tail -n 5 "$HOME/Library/Logs/NetTally/collector.out.log"
+        fi
+        if [ -f "$HOME/Library/Logs/NetTally/collector.err.log" ]; then
+            echo ""
+            echo "--- Recent Error Log (last 5 lines) ---"
+            tail -n 5 "$HOME/Library/Logs/NetTally/collector.err.log"
+        fi
+        ;;
+    install)
+        shift
+        bash "$SCRIPT_DIR/install.sh" "$@"
+        ;;
+    uninstall)
+        shift
+        bash "$SCRIPT_DIR/uninstall.sh" "$@"
+        ;;
+    *)
+        echo "Usage: nettally <command> [options]"
+        echo ""
+        echo "Commands:"
+        echo "  report      Generate CLI text usage report (--days 30, --by-day, --app, etc.)"
+        echo "  html        Generate and open interactive HTML dashboard"
+        echo "  status      Check background service status and recent log output"
+        echo "  run-once    Execute a single nettop polling cycle for testing"
+        echo "  run-daemon  Start collector daemon manually in foreground"
+        echo "  install     Install LaunchAgent background service"
+        echo "  uninstall   Remove LaunchAgent background service"
+        exit 1
+        ;;
+esac
