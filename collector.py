@@ -84,11 +84,15 @@ def poll_once(db_path: str, process_states: Dict[Tuple[int, str], Tuple[int, int
     2. Calculates byte deltas per process
     3. Folds process names to canonical app names
     4. Updates process_states dict and DB
-    5. Records daily usage deltas in DB
+    5. Records 5-minute interval usage deltas in DB
     Returns (total_delta_in, total_delta_out)
     """
-    now = time.time()
-    day_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    now_dt = datetime.datetime.now()
+    minute_bucket = (now_dt.minute // 5) * 5
+    timestamp_5m = now_dt.strftime(f"%Y-%m-%d %H:{minute_bucket:02d}")
+    day_str = now_dt.strftime("%Y-%m-%d")
+    now_epoch = time.time()
+
     samples = fetch_nettop_sample()
 
     if not samples:
@@ -118,8 +122,8 @@ def poll_once(db_path: str, process_states: Dict[Tuple[int, str], Tuple[int, int
             delta_out = 0
 
         # Update process state memory & staging
-        updated_states[key] = (cur_in, cur_out, now)
-        process_states[key] = (cur_in, cur_out, now)
+        updated_states[key] = (cur_in, cur_out, now_epoch)
+        process_states[key] = (cur_in, cur_out, now_epoch)
 
         if delta_in > 0 or delta_out > 0:
             app_name = fold_app_name(raw_name, config_path=config_path)
@@ -130,12 +134,11 @@ def poll_once(db_path: str, process_states: Dict[Tuple[int, str], Tuple[int, int
             total_delta_in += delta_in
             total_delta_out += delta_out
 
-    # Persist updated process states and daily deltas to SQLite
+    # Persist updated process states and 5-minute interval deltas to SQLite
     update_process_states(db_path, updated_states)
     
-    # Convert app_deltas to dict of tuples for db record
     db_deltas = {app: (d[0], d[1]) for app, d in app_deltas.items()}
-    record_usage_deltas(db_path, day_str, db_deltas, is_poll=True)
+    record_usage_deltas(db_path, timestamp_5m, day_str, db_deltas, is_poll=True)
 
     return (total_delta_in, total_delta_out)
 
@@ -186,7 +189,6 @@ def main():
         elapsed = time.time() - start_time
         sleep_time = max(1.0, args.interval - elapsed)
         
-        # Incremental sleep to respond quickly to signals
         step = 0.5
         slept = 0.0
         while slept < sleep_time and RUNNING:

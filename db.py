@@ -26,13 +26,14 @@ def init_db(db_path: str) -> None:
     conn = get_connection(db_path)
     with conn:
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS usage_daily (
+            CREATE TABLE IF NOT EXISTS usage_5m (
+                timestamp_5m TEXT NOT NULL,
                 day          TEXT NOT NULL,
                 app_name     TEXT NOT NULL,
                 bytes_in     INTEGER NOT NULL DEFAULT 0,
                 bytes_out    INTEGER NOT NULL DEFAULT 0,
                 sample_count INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (day, app_name)
+                PRIMARY KEY (timestamp_5m, app_name)
             );
         """)
         conn.execute("""
@@ -85,20 +86,20 @@ def prune_stale_process_states(db_path: str, max_age_seconds: float = 86400.0) -
         conn.execute("DELETE FROM process_state WHERE last_seen_epoch < ?", (cutoff,))
     conn.close()
 
-def record_usage_deltas(db_path: str, day_str: str, deltas: Dict[str, Tuple[int, int]], is_poll: bool = True) -> None:
+def record_usage_deltas(db_path: str, timestamp_5m: str, day_str: str, deltas: Dict[str, Tuple[int, int]], is_poll: bool = True) -> None:
     if not deltas:
         return
     conn = get_connection(db_path)
     with conn:
         conn.executemany("""
-            INSERT INTO usage_daily (day, app_name, bytes_in, bytes_out, sample_count)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(day, app_name) DO UPDATE SET
+            INSERT INTO usage_5m (timestamp_5m, day, app_name, bytes_in, bytes_out, sample_count)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(timestamp_5m, app_name) DO UPDATE SET
                 bytes_in = bytes_in + excluded.bytes_in,
                 bytes_out = bytes_out + excluded.bytes_out,
                 sample_count = sample_count + excluded.sample_count
         """, [
-            (day_str, app_name, din, dout, 1 if is_poll else 0)
+            (timestamp_5m, day_str, app_name, din, dout, 1 if is_poll else 0)
             for app_name, (din, dout) in deltas.items()
         ])
     conn.close()
@@ -114,7 +115,7 @@ def query_usage_totals(db_path: str, days: Optional[int] = None, app_filter: Opt
                    SUM(sample_count) as total_samples,
                    MIN(day) as earliest_day,
                    MAX(day) as latest_day
-            FROM usage_daily
+            FROM usage_5m
         """
         where_clauses = []
         params = []
@@ -142,8 +143,12 @@ def query_usage_by_day(db_path: str, days: Optional[int] = None, app_filter: Opt
     conn = get_connection(db_path)
     try:
         sql = """
-            SELECT day, app_name, bytes_in, bytes_out, (bytes_in + bytes_out) as total_bytes, sample_count
-            FROM usage_daily
+            SELECT day, app_name,
+                   SUM(bytes_in) as bytes_in,
+                   SUM(bytes_out) as bytes_out,
+                   SUM(bytes_in + bytes_out) as total_bytes,
+                   SUM(sample_count) as sample_count
+            FROM usage_5m
         """
         where_clauses = []
         params = []
@@ -159,7 +164,74 @@ def query_usage_by_day(db_path: str, days: Optional[int] = None, app_filter: Opt
         if where_clauses:
             sql += " WHERE " + " AND ".join(where_clauses)
 
-        sql += " ORDER BY day DESC, total_bytes DESC"
+        sql += " GROUP BY day, app_name ORDER BY day DESC, total_bytes DESC"
+
+        cursor = conn.execute(sql, params)
+        results = [dict(row) for row in cursor.fetchall()]
+        return results
+    finally:
+        conn.close()
+
+def query_usage_by_hour(db_path: str, days: Optional[int] = None, app_filter: Optional[str] = None) -> List[Dict]:
+    conn = get_connection(db_path)
+    try:
+        sql = """
+            SELECT (substr(timestamp_5m, 1, 13) || ':00') as timestamp_hour,
+                   app_name,
+                   SUM(bytes_in) as bytes_in,
+                   SUM(bytes_out) as bytes_out,
+                   SUM(bytes_in + bytes_out) as total_bytes,
+                   SUM(sample_count) as sample_count
+            FROM usage_5m
+        """
+        where_clauses = []
+        params = []
+
+        if days is not None:
+            where_clauses.append("day >= date('now', 'localtime', '-' || ? || ' days')")
+            params.append(days)
+
+        if app_filter:
+            where_clauses.append("app_name LIKE ?")
+            params.append(f"%{app_filter}%")
+
+        if where_clauses:
+            sql += " WHERE " + " AND ".join(where_clauses)
+
+        sql += " GROUP BY timestamp_hour, app_name ORDER BY timestamp_hour DESC, total_bytes DESC"
+
+        cursor = conn.execute(sql, params)
+        results = [dict(row) for row in cursor.fetchall()]
+        return results
+    finally:
+        conn.close()
+
+def query_usage_by_5m(db_path: str, days: Optional[int] = None, app_filter: Optional[str] = None) -> List[Dict]:
+    conn = get_connection(db_path)
+    try:
+        sql = """
+            SELECT timestamp_5m, day, app_name,
+                   SUM(bytes_in) as bytes_in,
+                   SUM(bytes_out) as bytes_out,
+                   SUM(bytes_in + bytes_out) as total_bytes,
+                   SUM(sample_count) as sample_count
+            FROM usage_5m
+        """
+        where_clauses = []
+        params = []
+
+        if days is not None:
+            where_clauses.append("day >= date('now', 'localtime', '-' || ? || ' days')")
+            params.append(days)
+
+        if app_filter:
+            where_clauses.append("app_name LIKE ?")
+            params.append(f"%{app_filter}%")
+
+        if where_clauses:
+            sql += " WHERE " + " AND ".join(where_clauses)
+
+        sql += " GROUP BY timestamp_5m, app_name ORDER BY timestamp_5m DESC, total_bytes DESC"
 
         cursor = conn.execute(sql, params)
         results = [dict(row) for row in cursor.fetchall()]

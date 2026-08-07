@@ -58,11 +58,23 @@ cat <<EOF > "$PLIST_DEST"
 </plist>
 EOF
 
-# 4. Load LaunchAgent into launchctl
+# 4. Load LaunchAgent into launchctl (unload first if already registered)
 echo "Registering and starting LaunchAgent..."
 USER_ID=$(id -u)
-launchctl bootout "gui/$USER_ID/$PLIST_LABEL" 2>/dev/null || launchctl unload "$PLIST_DEST" 2>/dev/null || true
-launchctl bootstrap "gui/$USER_ID" "$PLIST_DEST" 2>/dev/null || launchctl load "$PLIST_DEST"
+
+# Try to unload/bootout any existing instance (ignore errors — may not be loaded yet)
+launchctl bootout "gui/$USER_ID/$PLIST_LABEL" 2>/dev/null || true
+
+# Small delay to let launchd settle after bootout
+sleep 0.5
+
+# Bootstrap the service; fall back to legacy load on older macOS
+if launchctl bootstrap "gui/$USER_ID" "$PLIST_DEST" 2>/dev/null; then
+    echo "Service registered via launchctl bootstrap."
+else
+    echo "bootstrap unavailable; using launchctl load..."
+    launchctl load -w "$PLIST_DEST" 2>/dev/null || true
+fi
 
 # 5. Create user bin symlink if standard path exists
 if [ -d "$HOME/.local/bin" ]; then

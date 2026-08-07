@@ -14,9 +14,10 @@ from db import (
     update_process_states,
     record_usage_deltas,
     query_usage_totals,
-    query_usage_by_day
+    query_usage_by_day,
+    query_usage_by_hour,
+    query_usage_by_5m
 )
-from collector import fetch_nettop_sample
 from html_generator import generate_html_report
 
 class TestAppFolder(unittest.TestCase):
@@ -80,17 +81,29 @@ class TestDatabaseAndDeltas(unittest.TestCase):
         self.assertIn((1234, "Chrome"), loaded)
         self.assertEqual(loaded[(1234, "Chrome")], (100, 200, 1000.0))
 
-    def test_usage_daily_recording(self):
-        day_1 = "2026-08-01"
-        day_2 = "2026-08-02"
+    def test_usage_5m_recording_and_queries(self):
+        t1 = "2026-08-07 14:00"
+        t2 = "2026-08-07 14:05"
+        day_str = "2026-08-07"
 
-        record_usage_deltas(self.db_path, day_1, {"Google Chrome": (5000, 1000)})
-        record_usage_deltas(self.db_path, day_1, {"Google Chrome": (3000, 500), "Slack": (2000, 100)})
-        record_usage_deltas(self.db_path, day_2, {"Google Chrome": (10000, 2000)})
+        record_usage_deltas(self.db_path, t1, day_str, {"Google Chrome": (5000, 1000)})
+        record_usage_deltas(self.db_path, t1, day_str, {"Google Chrome": (3000, 500), "Slack": (2000, 100)})
+        record_usage_deltas(self.db_path, t2, day_str, {"Google Chrome": (10000, 2000)})
 
+        # 5m query
+        by_5m = query_usage_by_5m(self.db_path, days=30)
+        self.assertEqual(len(by_5m), 3)
+
+        # Hourly query
+        by_hour = query_usage_by_hour(self.db_path, days=30)
+        chrome_hour = next(r for r in by_hour if r["app_name"] == "Google Chrome")
+        self.assertEqual(chrome_hour["bytes_in"], 18000)
+
+        # Daily query
         by_day = query_usage_by_day(self.db_path, days=30)
-        self.assertEqual(len(by_day), 3)
+        self.assertEqual(len(by_day), 2) # (Chrome, 2026-08-07) and (Slack, 2026-08-07)
 
+        # Total query
         totals = query_usage_totals(self.db_path, days=30)
         chrome_total = next(r for r in totals if r["app_name"] == "Google Chrome")
         self.assertEqual(chrome_total["total_bytes_in"], 18000)
@@ -98,26 +111,45 @@ class TestDatabaseAndDeltas(unittest.TestCase):
         self.assertEqual(chrome_total["total_samples"], 3)
 
     def test_day_boundary_isolation(self):
-        day_a = "2026-08-06"
-        day_b = "2026-08-07"
+        # Rows on different days must be stored under separate day values
+        # and must not be merged when querying by day.
+        t_day_a = "2026-08-06 23:55"
+        t_day_b = "2026-08-07 00:00"
 
-        record_usage_deltas(self.db_path, day_a, {"AppA": (100, 100)})
-        record_usage_deltas(self.db_path, day_b, {"AppA": (200, 200)})
+        record_usage_deltas(self.db_path, t_day_a, "2026-08-06", {"AppA": (100, 100)})
+        record_usage_deltas(self.db_path, t_day_b, "2026-08-07", {"AppA": (200, 200)})
 
-        records = query_usage_by_day(self.db_path, days=30)
-        app_a_records = [r for r in records if r["app_name"] == "AppA"]
+        by_day = query_usage_by_day(self.db_path, days=30)
+        app_a_records = [r for r in by_day if r["app_name"] == "AppA"]
         self.assertEqual(len(app_a_records), 2)
-        days = set(r["day"] for r in app_a_records)
-        self.assertEqual(days, {day_a, day_b})
+        days_found = set(r["day"] for r in app_a_records)
+        self.assertEqual(days_found, {"2026-08-06", "2026-08-07"})
 
     def test_empty_html_generation(self):
-        out_html = os.path.join(self.temp_dir.name, "dashboard.html")
+        # Dashboard must render without error and show an empty-state message
+        # when no usage data exists yet (fresh install).
+        out_html = os.path.join(self.temp_dir.name, "dashboard_empty.html")
         path = generate_html_report(self.db_path, days=30, output_path=out_html)
         self.assertTrue(os.path.exists(path))
         with open(path, "r", encoding="utf-8") as f:
             content = f.read()
             self.assertIn("NetTally", content)
             self.assertIn("No network usage records found", content)
+
+    def test_html_generation(self):
+        t1 = "2026-08-07 14:00"
+        day_str = "2026-08-07"
+        record_usage_deltas(self.db_path, t1, day_str, {"Google Chrome": (1000, 500)})
+
+        out_html = os.path.join(self.temp_dir.name, "dashboard.html")
+        path = generate_html_report(self.db_path, days=30, output_path=out_html)
+        self.assertTrue(os.path.exists(path))
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+            self.assertIn("NetTally", content)
+            self.assertIn("5-Min", content)
+            self.assertIn("Hourly", content)
+            self.assertIn("Daily", content)
 
 if __name__ == "__main__":
     unittest.main()

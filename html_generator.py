@@ -5,9 +5,15 @@ import os
 import subprocess
 import sys
 import webbrowser
-from typing import Optional
+from typing import Optional, List, Dict
 
-from db import get_db_path, query_usage_by_day, query_usage_totals
+from db import (
+    get_db_path,
+    query_usage_totals,
+    query_usage_by_day,
+    query_usage_by_hour,
+    query_usage_by_5m
+)
 from report import format_bytes
 
 DEFAULT_HTML_PATH = os.path.expanduser("~/Library/Application Support/NetTally/dashboard.html")
@@ -125,6 +131,32 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             font-weight: 600;
         }
 
+        .granularity-selector {
+            display: flex;
+            gap: 8px;
+            background: #0f172a;
+            padding: 4px;
+            border-radius: 8px;
+            border: 1px solid var(--card-border);
+        }
+
+        .btn-granularity {
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-granularity.active {
+            background: var(--accent-color);
+            color: #0f172a;
+        }
+
         .table-container {
             background: var(--card-bg);
             border: 1px solid var(--card-border);
@@ -194,7 +226,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <header>
         <div>
             <h1>📶 NetTally</h1>
-            <div class="subtitle">Per-App Daily Network Accounting</div>
+            <div class="subtitle">Per-App Network Accounting & Timeline Analysis</div>
         </div>
         <div class="subtitle">Generated on __GENERATED_TIME__</div>
     </header>
@@ -224,7 +256,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
     <div class="chart-container">
         <div class="chart-header">
-            <div class="chart-title">Daily Transfer Breakdown by App</div>
+            <div class="chart-title">Transfer Timeline Breakdown</div>
+            <div class="granularity-selector">
+                <button class="btn-granularity active" onclick="switchGranularity('5m', this)">5-Min</button>
+                <button class="btn-granularity" onclick="switchGranularity('hourly', this)">Hourly</button>
+                <button class="btn-granularity" onclick="switchGranularity('daily', this)">Daily</button>
+            </div>
         </div>
         <div style="height: 380px; position: relative;">
             <canvas id="usageChart"></canvas>
@@ -253,12 +290,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     </div>
 
     <script>
-        const chartData = __CHART_DATA_JSON__;
+        const viewsData = __VIEWS_DATA_JSON__;
 
         const ctx = document.getElementById('usageChart').getContext('2d');
-        new Chart(ctx, {
+        let currentChart = new Chart(ctx, {
             type: 'bar',
-            data: chartData,
+            data: viewsData['5m'] || { labels: [], datasets: [] },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
@@ -266,7 +303,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     x: {
                         stacked: true,
                         grid: { color: '#334155' },
-                        ticks: { color: '#94a3b8' }
+                        ticks: { color: '#94a3b8', maxRotation: 45, minRotation: 0 }
                     },
                     y: {
                         stacked: true,
@@ -293,6 +330,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 }
             }
         });
+
+        function switchGranularity(viewKey, btnElement) {
+            document.querySelectorAll('.btn-granularity').forEach(btn => btn.classList.remove('active'));
+            btnElement.classList.add('active');
+            if (viewsData[viewKey]) {
+                currentChart.data = viewsData[viewKey];
+                currentChart.update();
+            }
+        }
 
         function formatBytesJS(bytes) {
             if (bytes === 0) return '0 B';
@@ -325,15 +371,49 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </html>
 """
 
+def build_view_dataset(records: List[Dict], time_key_name: str, top_apps: List[str], colors: List[str]) -> Dict:
+    distinct_times = sorted(list(set(r[time_key_name] for r in records)))
+    datasets = []
+
+    for idx, app in enumerate(top_apps):
+        color = colors[idx % len(colors)]
+        data = []
+        for t in distinct_times:
+            bytes_sum = sum(r["total_bytes"] for r in records if r[time_key_name] == t and r["app_name"] == app)
+            data.append(bytes_sum)
+        datasets.append({
+            "label": app,
+            "data": data,
+            "backgroundColor": color
+        })
+
+    if distinct_times and top_apps:
+        other_data = []
+        for t in distinct_times:
+            bytes_sum = sum(r["total_bytes"] for r in records if r[time_key_name] == t and r["app_name"] not in top_apps)
+            other_data.append(bytes_sum)
+        if any(v > 0 for v in other_data):
+            datasets.append({
+                "label": "Other Apps",
+                "data": other_data,
+                "backgroundColor": colors[-1]
+            })
+
+    return {
+        "labels": distinct_times,
+        "datasets": datasets
+    }
+
 def generate_html_report(db_path: str, days: int = 30, output_path: str = DEFAULT_HTML_PATH) -> str:
     totals = query_usage_totals(db_path, days=days)
     daily_records = query_usage_by_day(db_path, days=days)
+    hourly_records = query_usage_by_hour(db_path, days=days)
+    records_5m = query_usage_by_5m(db_path, days=days)
 
     grand_in = sum(r["total_bytes_in"] or 0 for r in totals)
     grand_out = sum(r["total_bytes_out"] or 0 for r in totals)
     grand_total = sum(r["total_bytes"] or 0 for r in totals)
 
-    # Prepare table rows
     if totals:
         table_rows = []
         for r in totals:
@@ -350,43 +430,16 @@ def generate_html_report(db_path: str, days: int = 30, output_path: str = DEFAUL
     else:
         table_html = '<tr><td colspan="5" style="text-align:center; color: var(--text-secondary); padding: 24px;">No network usage records found for this period.</td></tr>'
 
-    # Prepare chart data (stacked bar chart: X axis = days, Datasets = top 8 apps + Other)
-    distinct_days = sorted(list(set(r["day"] for r in daily_records)))
     top_apps = [r["app_name"] for r in totals[:8]] if totals else []
-    
     colors = [
         '#38bdf8', '#818cf8', '#c084fc', '#f472b6',
         '#fb7185', '#34d399', '#fbbf24', '#a3e635', '#94a3b8'
     ]
 
-    datasets = []
-    for idx, app in enumerate(top_apps):
-        color = colors[idx % len(colors)]
-        data = []
-        for d in distinct_days:
-            bytes_sum = sum(r["total_bytes"] for r in daily_records if r["day"] == d and r["app_name"] == app)
-            data.append(bytes_sum)
-        datasets.append({
-            "label": app,
-            "data": data,
-            "backgroundColor": color
-        })
-
-    if distinct_days and top_apps:
-        other_data = []
-        for d in distinct_days:
-            bytes_sum = sum(r["total_bytes"] for r in daily_records if r["day"] == d and r["app_name"] not in top_apps)
-            other_data.append(bytes_sum)
-        if any(v > 0 for v in other_data):
-            datasets.append({
-                "label": "Other Apps",
-                "data": other_data,
-                "backgroundColor": colors[-1]
-            })
-
-    chart_data = {
-        "labels": distinct_days,
-        "datasets": datasets
+    views_data = {
+        "5m": build_view_dataset(records_5m, "timestamp_5m", top_apps, colors),
+        "hourly": build_view_dataset(hourly_records, "timestamp_hour", top_apps, colors),
+        "daily": build_view_dataset(daily_records, "day", top_apps, colors)
     }
 
     import datetime
@@ -399,7 +452,7 @@ def generate_html_report(db_path: str, days: int = 30, output_path: str = DEFAUL
     html_content = html_content.replace("__ACTIVE_APPS__", str(len(totals)))
     html_content = html_content.replace("__DAYS__", str(days))
     html_content = html_content.replace("__TABLE_ROWS__", table_html)
-    html_content = html_content.replace("__CHART_DATA_JSON__", json.dumps(chart_data))
+    html_content = html_content.replace("__VIEWS_DATA_JSON__", json.dumps(views_data))
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:

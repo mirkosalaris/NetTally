@@ -4,7 +4,13 @@ import json
 import sys
 from typing import List, Dict, Optional
 
-from db import get_db_path, query_usage_totals, query_usage_by_day
+from db import (
+    get_db_path,
+    query_usage_totals,
+    query_usage_by_day,
+    query_usage_by_hour,
+    query_usage_by_5m
+)
 
 def format_bytes(num_bytes: int) -> str:
     if num_bytes < 0:
@@ -29,13 +35,11 @@ def print_table(headers: List[str], rows: List[List[str]]) -> None:
             if i < len(col_widths):
                 col_widths[i] = max(col_widths[i], len(cell))
 
-    # Header
     header_str = " | ".join(headers[i].ljust(col_widths[i]) for i in range(len(headers)))
     divider_str = "-+-".join("-" * col_widths[i] for i in range(len(headers)))
     print(header_str)
     print(divider_str)
 
-    # Rows
     for row in rows:
         line_str = " | ".join(row[i].ljust(col_widths[i]) for i in range(len(row)))
         print(line_str)
@@ -52,7 +56,6 @@ def generate_totals_report(db_path: str, days: Optional[int], app_filter: Option
             print(f'"{r["app_name"]}",{r["total_bytes_in"]},{r["total_bytes_out"]},{r["total_bytes"]},{r["total_samples"]},{r["earliest_day"]},{r["latest_day"]}')
         return
 
-    # Table format
     headers = ["App Name", "Received", "Sent", "Total Usage", "Samples", "Period"]
     rows = []
     grand_in = 0
@@ -78,10 +81,10 @@ def generate_totals_report(db_path: str, days: Optional[int], app_filter: Option
             format_bytes(b_out),
             format_bytes(b_tot),
             str(samples),
-            period
+            str(period)
         ])
 
-    print(f"\n--- Network Usage Report (Totals: {'Last ' + str(days) + ' days' if days else 'All time'}) ---")
+    print(f"\n--- NetTally Usage Report (Totals: {'Last ' + str(days) + ' days' if days else 'All time'}) ---")
     print_table(headers, rows)
     if rows:
         print(f"\nTOTAL: Received {format_bytes(grand_in)} | Sent {format_bytes(grand_out)} | Total {format_bytes(grand_total)} across {len(rows)} apps.")
@@ -98,7 +101,6 @@ def generate_by_day_report(db_path: str, days: Optional[int], app_filter: Option
             print(f'{r["day"]},"{r["app_name"]}",{r["bytes_in"]},{r["bytes_out"]},{r["total_bytes"]},{r["sample_count"]}')
         return
 
-    # Table format
     headers = ["Date", "App Name", "Received", "Sent", "Total Usage", "Samples"]
     rows = []
     for r in results:
@@ -111,7 +113,61 @@ def generate_by_day_report(db_path: str, days: Optional[int], app_filter: Option
             str(r["sample_count"])
         ])
 
-    print(f"\n--- Network Usage Report (Daily Breakdown) ---")
+    print(f"\n--- NetTally Usage Report (Daily Breakdown) ---")
+    print_table(headers, rows)
+
+def generate_by_hour_report(db_path: str, days: Optional[int], app_filter: Optional[str], fmt: str) -> None:
+    results = query_usage_by_hour(db_path, days=days, app_filter=app_filter)
+
+    if fmt == "json":
+        print(json.dumps(results, indent=2))
+        return
+    elif fmt == "csv":
+        print("Hour,App Name,Received,Sent,Total Transfer,Samples")
+        for r in results:
+            print(f'{r["timestamp_hour"]},"{r["app_name"]}",{r["bytes_in"]},{r["bytes_out"]},{r["total_bytes"]},{r["sample_count"]}')
+        return
+
+    headers = ["Hour Block", "App Name", "Received", "Sent", "Total Usage", "Samples"]
+    rows = []
+    for r in results:
+        rows.append([
+            r["timestamp_hour"],
+            r["app_name"],
+            format_bytes(r["bytes_in"]),
+            format_bytes(r["bytes_out"]),
+            format_bytes(r["total_bytes"]),
+            str(r["sample_count"])
+        ])
+
+    print(f"\n--- NetTally Usage Report (Hourly Breakdown) ---")
+    print_table(headers, rows)
+
+def generate_by_5m_report(db_path: str, days: Optional[int], app_filter: Optional[str], fmt: str) -> None:
+    results = query_usage_by_5m(db_path, days=days, app_filter=app_filter)
+
+    if fmt == "json":
+        print(json.dumps(results, indent=2))
+        return
+    elif fmt == "csv":
+        print("5m Timestamp,App Name,Received,Sent,Total Transfer,Samples")
+        for r in results:
+            print(f'{r["timestamp_5m"]},"{r["app_name"]}",{r["bytes_in"]},{r["bytes_out"]},{r["total_bytes"]},{r["sample_count"]}')
+        return
+
+    headers = ["5-Min Block", "App Name", "Received", "Sent", "Total Usage", "Samples"]
+    rows = []
+    for r in results:
+        rows.append([
+            r["timestamp_5m"],
+            r["app_name"],
+            format_bytes(r["bytes_in"]),
+            format_bytes(r["bytes_out"]),
+            format_bytes(r["total_bytes"]),
+            str(r["sample_count"])
+        ])
+
+    print(f"\n--- NetTally Usage Report (5-Minute Block Breakdown) ---")
     print_table(headers, rows)
 
 def main():
@@ -120,6 +176,8 @@ def main():
     parser.add_argument("--days", type=int, default=30, help="Number of past days to include (default: 30)")
     parser.add_argument("--all", action="store_true", help="Include all historical data regardless of days")
     parser.add_argument("--by-day", action="store_true", help="Group breakdown by day and app")
+    parser.add_argument("--by-hour", action="store_true", help="Group breakdown by 1-hour blocks and app")
+    parser.add_argument("--by-5m", "--5m", action="store_true", help="Group breakdown by 5-minute blocks and app")
     parser.add_argument("--today", action="store_true", help="Show usage for today only")
     parser.add_argument("--app", type=str, default=None, help="Filter usage by specific app name (case-insensitive substring match)")
     parser.add_argument("--format", choices=["table", "csv", "json"], default="table", help="Output format (default: table)")
@@ -133,7 +191,11 @@ def main():
     elif args.today:
         days_filter = 0
 
-    if args.by_day:
+    if args.by_5m:
+        generate_by_5m_report(db_path, days=days_filter, app_filter=args.app, fmt=args.format)
+    elif args.by_hour:
+        generate_by_hour_report(db_path, days=days_filter, app_filter=args.app, fmt=args.format)
+    elif args.by_day:
         generate_by_day_report(db_path, days=days_filter, app_filter=args.app, fmt=args.format)
     else:
         generate_totals_report(db_path, days=days_filter, app_filter=args.app, fmt=args.format)
