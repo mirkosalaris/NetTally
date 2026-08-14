@@ -157,6 +157,43 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             color: #0f172a;
         }
 
+        .chart-controls {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .date-filter {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .date-filter input[type="datetime-local"] {
+            background: #0f172a;
+            border: 1px solid var(--card-border);
+            color: var(--text-primary);
+            padding: 6px;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            color-scheme: dark;
+        }
+
+        .date-filter button {
+            background: #1e293b;
+            border: 1px solid var(--card-border);
+            color: var(--text-secondary);
+            padding: 6px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+
+        .date-filter button:hover {
+            background: #334155;
+            color: var(--text-primary);
+        }
+
         .table-container {
             background: var(--card-bg);
             border: 1px solid var(--card-border);
@@ -200,6 +237,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             font-weight: 600;
             padding: 12px 16px;
             border-bottom: 1px solid var(--card-border);
+        }
+
+        th.sortable {
+            cursor: pointer;
+            user-select: none;
+        }
+        
+        th.sortable:hover {
+            background: #1e293b;
+            color: var(--text-primary);
         }
 
         td {
@@ -257,10 +304,19 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <div class="chart-container">
         <div class="chart-header">
             <div class="chart-title">Transfer Timeline Breakdown</div>
-            <div class="granularity-selector">
-                <button class="btn-granularity active" onclick="switchGranularity('5m', this)">5-Min</button>
-                <button class="btn-granularity" onclick="switchGranularity('hourly', this)">Hourly</button>
-                <button class="btn-granularity" onclick="switchGranularity('daily', this)">Daily</button>
+            <div class="chart-controls">
+                <div class="date-filter">
+                    <input type="datetime-local" id="startDate">
+                    <span style="color: var(--text-secondary);">to</span>
+                    <input type="datetime-local" id="endDate">
+                    <button onclick="applyFilter()">Apply</button>
+                    <button onclick="resetFilter()">Reset</button>
+                </div>
+                <div class="granularity-selector">
+                    <button class="btn-granularity active" onclick="switchGranularity('5m', this)">5-Min</button>
+                    <button class="btn-granularity" onclick="switchGranularity('hourly', this)">Hourly</button>
+                    <button class="btn-granularity" onclick="switchGranularity('daily', this)">Daily</button>
+                </div>
             </div>
         </div>
         <div style="height: 380px; position: relative;">
@@ -276,11 +332,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <table id="usageTable">
             <thead>
                 <tr>
-                    <th>Application</th>
-                    <th>Received</th>
-                    <th>Sent</th>
-                    <th>Total Transfer</th>
-                    <th>Samples</th>
+                    <th class="sortable" onclick="sortTable(0, false)">Application</th>
+                    <th class="sortable" onclick="sortTable(1, true)">Received</th>
+                    <th class="sortable" onclick="sortTable(2, true)">Sent</th>
+                    <th class="sortable" onclick="sortTable(3, true)">Total Transfer</th>
+                    <th class="sortable" onclick="sortTable(4, false)">Samples</th>
                 </tr>
             </thead>
             <tbody>
@@ -331,12 +387,86 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             }
         });
 
+        let currentGranularity = '5m';
+
+        window.onload = function() {
+            initDateInputs();
+        };
+
+        function initDateInputs() {
+            let labels = viewsData[currentGranularity]?.labels;
+            if (labels && labels.length > 0) {
+                document.getElementById('startDate').value = formatForInput(labels[0]);
+                document.getElementById('endDate').value = formatForInput(labels[labels.length - 1]);
+            }
+        }
+
+        function formatForInput(labelStr) {
+            if (labelStr.length === 10) {
+                return labelStr + "T00:00";
+            }
+            return labelStr.replace(" ", "T");
+        }
+
+        function applyFilter() {
+            let startVal = document.getElementById('startDate').value;
+            let endVal = document.getElementById('endDate').value;
+            
+            if (!startVal || !endVal) {
+                currentChart.data = viewsData[currentGranularity];
+                currentChart.update();
+                return;
+            }
+
+            let start = startVal.replace("T", " ");
+            let end = endVal.replace("T", " ");
+
+            let originalData = viewsData[currentGranularity];
+            let filteredLabels = [];
+            let filteredDatasets = originalData.datasets.map(ds => ({
+                ...ds,
+                data: []
+            }));
+
+            for (let i = 0; i < originalData.labels.length; i++) {
+                let label = originalData.labels[i];
+                let compareLabel = label;
+                let compareStart = start;
+                let compareEnd = end;
+
+                if (currentGranularity === 'daily') {
+                    compareLabel = label.substring(0, 10);
+                    compareStart = start.substring(0, 10);
+                    compareEnd = end.substring(0, 10);
+                }
+
+                if (compareLabel >= compareStart && compareLabel <= compareEnd) {
+                    filteredLabels.push(label);
+                    for (let j = 0; j < originalData.datasets.length; j++) {
+                        filteredDatasets[j].data.push(originalData.datasets[j].data[i]);
+                    }
+                }
+            }
+
+            currentChart.data = {
+                labels: filteredLabels,
+                datasets: filteredDatasets
+            };
+            currentChart.update();
+        }
+
+        function resetFilter() {
+            initDateInputs();
+            currentChart.data = viewsData[currentGranularity];
+            currentChart.update();
+        }
+
         function switchGranularity(viewKey, btnElement) {
             document.querySelectorAll('.btn-granularity').forEach(btn => btn.classList.remove('active'));
             btnElement.classList.add('active');
+            currentGranularity = viewKey;
             if (viewsData[viewKey]) {
-                currentChart.data = viewsData[viewKey];
-                currentChart.update();
+                applyFilter();
             }
         }
 
@@ -365,6 +495,57 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     }
                 }
             }
+        }
+
+        let currentSortCol = -1;
+        let sortAscending = true;
+
+        function sortTable(colIndex, isRaw) {
+            const table = document.getElementById("usageTable");
+            const tbody = table.getElementsByTagName("tbody")[0];
+            const rows = Array.from(tbody.getElementsByTagName("tr"));
+            
+            if (rows.length === 1 && rows[0].cells.length === 1) return;
+
+            if (currentSortCol === colIndex) {
+                sortAscending = !sortAscending;
+            } else {
+                sortAscending = true;
+                currentSortCol = colIndex;
+            }
+
+            rows.sort((a, b) => {
+                let cellA = a.getElementsByTagName("td")[colIndex];
+                let cellB = b.getElementsByTagName("td")[colIndex];
+                
+                let valA, valB;
+                if (isRaw) {
+                    valA = parseInt(cellA.getAttribute("data-raw") || 0, 10);
+                    valB = parseInt(cellB.getAttribute("data-raw") || 0, 10);
+                } else if (colIndex === 4) {
+                    valA = parseInt(cellA.textContent || cellA.innerText, 10);
+                    valB = parseInt(cellB.textContent || cellB.innerText, 10);
+                } else {
+                    valA = cellA.textContent || cellA.innerText;
+                    valB = cellB.textContent || cellB.innerText;
+                    valA = valA.toLowerCase();
+                    valB = valB.toLowerCase();
+                }
+
+                if (valA < valB) return sortAscending ? -1 : 1;
+                if (valA > valB) return sortAscending ? 1 : -1;
+                return 0;
+            });
+
+            const ths = table.getElementsByTagName("th");
+            for (let i = 0; i < ths.length; i++) {
+                ths[i].innerHTML = ths[i].innerHTML.replace(/ [▲▼]/, '');
+                if (i === colIndex) {
+                    ths[i].innerHTML += sortAscending ? ' ▲' : ' ▼';
+                }
+            }
+
+            rows.forEach(row => tbody.appendChild(row));
         }
     </script>
 </body>
@@ -420,9 +601,9 @@ def generate_html_report(db_path: str, days: int = 30, output_path: str = DEFAUL
             table_rows.append(f"""
                 <tr>
                     <td><strong>{r['app_name']}</strong></td>
-                    <td>{format_bytes(r['total_bytes_in'] or 0)}</td>
-                    <td>{format_bytes(r['total_bytes_out'] or 0)}</td>
-                    <td><span class="badge">{format_bytes(r['total_bytes'] or 0)}</span></td>
+                    <td data-raw="{r['total_bytes_in'] or 0}">{format_bytes(r['total_bytes_in'] or 0)}</td>
+                    <td data-raw="{r['total_bytes_out'] or 0}">{format_bytes(r['total_bytes_out'] or 0)}</td>
+                    <td data-raw="{r['total_bytes'] or 0}"><span class="badge">{format_bytes(r['total_bytes'] or 0)}</span></td>
                     <td>{r['total_samples'] or 0}</td>
                 </tr>
             """)
