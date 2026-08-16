@@ -19,6 +19,41 @@ from db import (
     query_usage_by_5m
 )
 from html_generator import generate_html_report
+from config import load_config, DEFAULTS
+
+class TestConfig(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_missing_file(self):
+        non_existent_path = os.path.join(self.temp_dir.name, "missing_config.json")
+        cfg = load_config(non_existent_path)
+        self.assertEqual(cfg, DEFAULTS)
+
+    def test_malformed_json(self):
+        malformed_path = os.path.join(self.temp_dir.name, "malformed_config.json")
+        with open(malformed_path, "w", encoding="utf-8") as f:
+            f.write("{invalid json: //, }")
+        cfg = load_config(malformed_path)
+        # Should gracefully fallback to defaults
+        self.assertEqual(cfg, DEFAULTS)
+
+    def test_partial_file(self):
+        partial_path = os.path.join(self.temp_dir.name, "partial_config.json")
+        with open(partial_path, "w", encoding="utf-8") as f:
+            f.write('''{
+              // comment
+              "polling_interval_seconds": 15,
+              "unknown_key": "hello"
+            }''')
+        cfg = load_config(partial_path)
+        self.assertEqual(cfg["polling_interval_seconds"], 15)
+        self.assertEqual(cfg["unknown_key"], "hello")
+        # rest should be defaults
+        self.assertEqual(cfg["html_top_apps_limit"], DEFAULTS["html_top_apps_limit"])
 
 class TestAppFolder(unittest.TestCase):
     def setUp(self):

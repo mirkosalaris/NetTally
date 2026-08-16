@@ -170,10 +170,13 @@ def generate_by_5m_report(db_path: str, days: Optional[int], app_filter: Optiona
     print(f"\n--- NetTally Usage Report (5-Minute Block Breakdown) ---")
     print_table(headers, rows)
 
+from config import load_config
+
 def main():
+    cfg = load_config()
     parser = argparse.ArgumentParser(description="NetTally CLI Viewer")
     parser.add_argument("--db", type=str, default=None, help="Path to SQLite database file")
-    parser.add_argument("--days", type=int, default=30, help="Number of past days to include (default: 30)")
+    parser.add_argument("--days", type=int, default=cfg["default_report_days"], help=f"Number of past days to include (default: {cfg['default_report_days']})")
     parser.add_argument("--all", action="store_true", help="Include all historical data regardless of days")
     parser.add_argument("--by-day", action="store_true", help="Group breakdown by day and app")
     parser.add_argument("--by-hour", action="store_true", help="Group breakdown by 1-hour blocks and app")

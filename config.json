@@ -1,0 +1,24 @@
+{
+  // How often the collector polls nettop, in seconds. Lower = more precise
+  // bucketing and slightly higher CPU use; higher = coarser but cheaper.
+  "polling_interval_seconds": 30,
+
+  // How often (seconds) stale entries in the process_state table are pruned.
+  "process_state_prune_interval_seconds": 21600,
+
+  // A process_state row older than this (seconds) is considered stale and pruned.
+  "process_state_max_age_seconds": 86400,
+
+  // Default number of past days shown by `nettally report` and `nettally html`
+  // when no --days/--all/--today flag is given.
+  "default_report_days": 30,
+
+  // How many top apps get their own line in the HTML dashboard chart/table;
+  // everything past this is grouped into "Other Apps".
+  "html_top_apps_limit": 8,
+
+  // A poll landing later than (polling_interval_seconds * this) since the
+  // previous poll is treated as a sleep/dark-wake gap rather than an ordinary
+  // tick.
+  "gap_threshold_multiplier": 3
+}

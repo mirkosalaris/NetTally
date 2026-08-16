@@ -15,6 +15,7 @@ from db import (
     query_usage_by_5m
 )
 from report import format_bytes
+from config import load_config
 
 DEFAULT_HTML_PATH = os.path.expanduser("~/Library/Application Support/NetTally/dashboard.html")
 
@@ -585,7 +586,11 @@ def build_view_dataset(records: List[Dict], time_key_name: str, top_apps: List[s
         "datasets": datasets
     }
 
-def generate_html_report(db_path: str, days: int = 30, output_path: str = DEFAULT_HTML_PATH) -> str:
+def generate_html_report(db_path: str, days: Optional[int] = None, output_path: str = DEFAULT_HTML_PATH) -> str:
+    cfg = load_config()
+    if days is None:
+        days = cfg["default_report_days"]
+        
     totals = query_usage_totals(db_path, days=days)
     daily_records = query_usage_by_day(db_path, days=days)
     hourly_records = query_usage_by_hour(db_path, days=days)
@@ -611,7 +616,8 @@ def generate_html_report(db_path: str, days: int = 30, output_path: str = DEFAUL
     else:
         table_html = '<tr><td colspan="5" style="text-align:center; color: var(--text-secondary); padding: 24px;">No network usage records found for this period.</td></tr>'
 
-    top_apps = [r["app_name"] for r in totals[:8]] if totals else []
+    top_apps_limit = cfg.get("html_top_apps_limit", 8)
+    top_apps = [r["app_name"] for r in totals[:top_apps_limit]] if totals else []
     colors = [
         '#38bdf8', '#818cf8', '#c084fc', '#f472b6',
         '#fb7185', '#34d399', '#fbbf24', '#a3e635', '#94a3b8'
@@ -642,9 +648,10 @@ def generate_html_report(db_path: str, days: int = 30, output_path: str = DEFAUL
     return output_path
 
 def main():
+    cfg = load_config()
     parser = argparse.ArgumentParser(description="Generate HTML network usage dashboard")
     parser.add_argument("--db", type=str, default=None, help="Path to SQLite database file")
-    parser.add_argument("--days", type=int, default=30, help="Number of past days to include (default: 30)")
+    parser.add_argument("--days", type=int, default=cfg["default_report_days"], help=f"Number of past days to include (default: {cfg['default_report_days']})")
     parser.add_argument("--out", type=str, default=DEFAULT_HTML_PATH, help="Output HTML file path")
     parser.add_argument("--open", action="store_true", help="Open generated HTML file in default browser")
     args = parser.parse_args()

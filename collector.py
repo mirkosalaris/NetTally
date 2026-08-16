@@ -18,6 +18,8 @@ from db import (
     record_usage_deltas
 )
 
+from config import load_config
+
 RUNNING = True
 
 def signal_handler(signum, frame):
@@ -143,9 +145,10 @@ def poll_once(db_path: str, process_states: Dict[Tuple[int, str], Tuple[int, int
     return (total_delta_in, total_delta_out)
 
 def main():
+    cfg = load_config()
     parser = argparse.ArgumentParser(description="NetTally: Mac Per-App Network Usage Collector")
     parser.add_argument("--db", type=str, default=None, help="Path to SQLite database file")
-    parser.add_argument("--interval", type=int, default=30, help="Polling interval in seconds (default: 30)")
+    parser.add_argument("--interval", type=int, default=cfg["polling_interval_seconds"], help=f"Polling interval in seconds (default: {cfg['polling_interval_seconds']})")
     parser.add_argument("--once", action="store_true", help="Run a single poll sample and exit")
     parser.add_argument("--config", type=str, default=None, help="Path to custom app_map.json")
     args = parser.parse_args()
@@ -177,8 +180,8 @@ def main():
         except Exception as e:
             print(f"Error during polling cycle: {e}", file=sys.stderr)
 
-        # Prune stale process state once every 6 hours
-        if time.time() - last_prune > 21600:
+        # Prune stale process state once every prune_interval
+        if time.time() - last_prune > cfg["process_state_prune_interval_seconds"]:
             try:
                 prune_stale_process_states(db_path)
                 last_prune = time.time()

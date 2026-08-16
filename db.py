@@ -79,7 +79,12 @@ def update_process_states(db_path: str, states: Dict[Tuple[int, str], Tuple[int,
         ])
     conn.close()
 
-def prune_stale_process_states(db_path: str, max_age_seconds: float = 86400.0) -> None:
+from config import load_config
+
+def prune_stale_process_states(db_path: str, max_age_seconds: Optional[float] = None) -> None:
+    if max_age_seconds is None:
+        cfg = load_config()
+        max_age_seconds = float(cfg["process_state_max_age_seconds"])
     conn = get_connection(db_path)
     cutoff = time.time() - max_age_seconds
     with conn:

@@ -29,9 +29,24 @@ if [ ! -f "$APP_DIR/app_map.json" ]; then
 else
     echo "Existing app_map.json found in Application Support; keeping user customizations."
 fi
+if [ ! -f "$APP_DIR/config.json" ]; then
+    cp "$SCRIPT_DIR/config.json" "$APP_DIR/"
+else
+    echo "Existing config.json found in Application Support; keeping user customizations."
+fi
 
-# 3. Generate LaunchAgent plist with user home directory
+# 3. Generate LaunchAgent plist with user home directory and dynamic interval
 echo "Generating LaunchAgent plist..."
+POLLING_INTERVAL=$(python3 -c "
+import json, re
+try:
+    c = open('$APP_DIR/config.json').read()
+    c = re.sub(r'(\"(?:[^\"\\\\]|\\\\.)*\")|(/\*[\s\S]*?\*/)|(//.*)', lambda m: m.group(1) or '', c)
+    print(json.loads(c).get('polling_interval_seconds', 30))
+except Exception:
+    print(30)
+" 2>/dev/null || echo 30)
+
 cat <<EOF > "$PLIST_DEST"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -49,7 +64,7 @@ cat <<EOF > "$PLIST_DEST"
     <key>KeepAlive</key>
     <true/>
     <key>ThrottleInterval</key>
-    <integer>30</integer>
+    <integer>$POLLING_INTERVAL</integer>
     <key>StandardOutPath</key>
     <string>$LOG_DIR/collector.out.log</string>
     <key>StandardErrorPath</key>
