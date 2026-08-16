@@ -15,7 +15,9 @@ from db import (
     load_process_states,
     update_process_states,
     prune_stale_process_states,
-    record_usage_deltas
+    record_usage_deltas,
+    record_power_events,
+    record_gap
 )
 
 from config import load_config
@@ -53,7 +55,7 @@ def fetch_nettop_sample() -> List[Tuple[int, str, int, int]]:
         # Skip header line
         if "bytes_in" in line and "bytes_out" in line:
             continue
-
+        
         # Split from right to robustly handle process names containing commas
         parts = line.rstrip(",").rsplit(",", 2)
         if len(parts) < 3:
@@ -79,7 +81,7 @@ def fetch_nettop_sample() -> List[Tuple[int, str, int, int]]:
 
     return samples
 
-def poll_once(db_path: str, process_states: Dict[Tuple[int, str], Tuple[int, int, float]], config_path: Optional[str] = None) -> Tuple[int, int]:
+def poll_once(db_path: str, process_states: Dict[Tuple[int, str], Tuple[int, int, float]], config_path: Optional[str] = None, gap_classification: Optional[str] = None) -> Tuple[int, int]:
     """
     Performs a single polling cycle:
     1. Fetches nettop sample
@@ -140,9 +142,67 @@ def poll_once(db_path: str, process_states: Dict[Tuple[int, str], Tuple[int, int
     update_process_states(db_path, updated_states)
     
     db_deltas = {app: (d[0], d[1]) for app, d in app_deltas.items()}
-    record_usage_deltas(db_path, timestamp_5m, day_str, db_deltas, is_poll=True)
+    record_usage_deltas(db_path, timestamp_5m, day_str, db_deltas, is_poll=True, gap_classification=gap_classification)
 
     return (total_delta_in, total_delta_out)
+
+def detect_and_classify_gap(db_path: str, t0: float, t1: float) -> str:
+    events = []
+    try:
+        res = subprocess.run(["pmset", "-g", "log"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True, timeout=10)
+        pattern = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4})\s+(Sleep|Wake|DarkWake)\b(.*)")
+        margin = 60.0
+        for line in res.stdout.splitlines():
+            m = pattern.match(line.strip())
+            if m:
+                ts_str, event_type, reason = m.groups()
+                try:
+                    # Parse timestamp with timezone
+                    dt = datetime.datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S %z")
+                    epoch = dt.timestamp()
+                    if (t0 - margin) <= epoch <= (t1 + margin):
+                        events.append((epoch, event_type, reason.strip()))
+                except Exception:
+                    continue
+    except Exception as e:
+        print(f"Error running pmset or parsing: {e}", file=sys.stderr)
+
+    if events:
+        record_power_events(db_path, events)
+
+    if not events:
+        classification = 'unknown_gap'
+    else:
+        events = sorted(events, key=lambda x: x[0])
+        last_sleep_idx = -1
+        for i, (_, et, _) in enumerate(events):
+            if et == 'Sleep':
+                last_sleep_idx = i
+
+        if last_sleep_idx != -1:
+            subsequent = events[last_sleep_idx+1:]
+            has_wake = any(et == 'Wake' for (_, et, _) in subsequent)
+            has_darkwake = any(et == 'DarkWake' for (_, et, _) in subsequent)
+            if has_wake:
+                classification = 'sleep_then_full_wake'
+            elif has_darkwake:
+                classification = 'dark_wake_only'
+            else:
+                classification = 'dark_wake_only'
+        else:
+            has_wake = any(et == 'Wake' for (_, et, _) in events)
+            has_darkwake = any(et == 'DarkWake' for (_, et, _) in events)
+            if has_wake:
+                classification = 'sleep_then_full_wake'
+            elif has_darkwake:
+                classification = 'dark_wake_only'
+            else:
+                classification = 'unknown_gap'
+
+    record_gap(db_path, t0, t1, classification)
+    return classification
+
+import re
 
 def main():
     cfg = load_config()
@@ -165,6 +225,7 @@ def main():
 
     process_states = load_process_states(db_path)
     last_prune = time.time()
+    last_poll_epoch = None
 
     if args.once:
         delta_in, delta_out = poll_once(db_path, process_states, config_path=args.config)
@@ -173,8 +234,18 @@ def main():
 
     while RUNNING:
         start_time = time.time()
+        gap_class = None
+
+        if last_poll_epoch is not None:
+            time_diff = start_time - last_poll_epoch
+            gap_threshold = args.interval * cfg.get("gap_threshold_multiplier", 3)
+            if time_diff > gap_threshold:
+                gap_class = detect_and_classify_gap(db_path, last_poll_epoch, start_time)
+
+        last_poll_epoch = start_time
+
         try:
-            delta_in, delta_out = poll_once(db_path, process_states, config_path=args.config)
+            delta_in, delta_out = poll_once(db_path, process_states, config_path=args.config, gap_classification=gap_class)
             if delta_in > 0 or delta_out > 0:
                 print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Sample recorded: +{delta_in} B in, +{delta_out} B out")
         except Exception as e:

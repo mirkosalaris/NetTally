@@ -164,5 +164,6 @@ python3 -m unittest discover tests
 ## Known Limitations
 
 - **Best-Effort Accounting**: Byte totals reflect counters reported by `nettop` and Activity Monitor, which are best-effort system estimations.
+- **Sleep/Dark-Wake Gaps**: Network traffic measured immediately after waking up from sleep/dark-wake contains byte deltas that accumulated throughout the entire sleeping/idle period. NetTally retrospectively classifies these gaps using `pmset` logs, but the sub-gap timing of exact bytes (e.g. down to the minute of a specific background sync) remains unknown.
 - **Truncated Process Names**: On some macOS builds, `nettop` truncates process names longer than ~16 characters (e.g. `Google Chrome H.` instead of `Google Chrome Helper`). Custom mappings are provided in `app_map.json` to handle these cleanups seamlessly.
 - **macOS Only**: Uses `nettop`, `launchd`, and `launchctl` — inherently macOS-specific.

@@ -20,6 +20,62 @@ from db import (
 )
 from html_generator import generate_html_report
 from config import load_config, DEFAULTS
+import datetime
+from unittest.mock import patch, MagicMock
+from collector import detect_and_classify_gap
+
+class TestGapClassification(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self.temp_dir.name, "test_usage.db")
+        init_db(self.db_path)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    @patch('subprocess.run')
+    def test_gap_classification_dark_wake(self, mock_run):
+        mock_output = """
+2026-08-16 14:00:00 +0200 Sleep                 Entering Sleep state due to 'Lid Close'
+2026-08-16 14:05:00 +0200 DarkWake              DarkWake from Deep Idle
+"""
+        mock_res = MagicMock()
+        mock_res.stdout = mock_output
+        mock_run.return_value = mock_res
+
+        dt_sleep = datetime.datetime.strptime("2026-08-16 14:00:00 +0200", "%Y-%m-%d %H:%M:%S %z")
+        t0 = dt_sleep.timestamp() - 60
+        t1 = dt_sleep.timestamp() + 600
+
+        classification = detect_and_classify_gap(self.db_path, t0, t1)
+        self.assertEqual(classification, 'dark_wake_only')
+
+    @patch('subprocess.run')
+    def test_gap_classification_sleep_then_full_wake(self, mock_run):
+        mock_output = """
+2026-08-16 14:00:00 +0200 Sleep                 Entering Sleep state due to 'Lid Close'
+2026-08-16 14:05:00 +0200 DarkWake              DarkWake from Deep Idle
+2026-08-16 14:10:00 +0200 Wake                  Wake due to Power Button
+"""
+        mock_res = MagicMock()
+        mock_res.stdout = mock_output
+        mock_run.return_value = mock_res
+
+        dt_sleep = datetime.datetime.strptime("2026-08-16 14:00:00 +0200", "%Y-%m-%d %H:%M:%S %z")
+        t0 = dt_sleep.timestamp() - 60
+        t1 = dt_sleep.timestamp() + 1000
+
+        classification = detect_and_classify_gap(self.db_path, t0, t1)
+        self.assertEqual(classification, 'sleep_then_full_wake')
+
+    @patch('subprocess.run')
+    def test_gap_classification_unknown_gap(self, mock_run):
+        mock_res = MagicMock()
+        mock_res.stdout = ""
+        mock_run.return_value = mock_res
+
+        classification = detect_and_classify_gap(self.db_path, 1000, 2000)
+        self.assertEqual(classification, 'unknown_gap')
 
 class TestConfig(unittest.TestCase):
     def setUp(self):

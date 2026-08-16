@@ -33,6 +33,7 @@ def init_db(db_path: str) -> None:
                 bytes_in     INTEGER NOT NULL DEFAULT 0,
                 bytes_out    INTEGER NOT NULL DEFAULT 0,
                 sample_count INTEGER NOT NULL DEFAULT 0,
+                gap_classification TEXT,
                 PRIMARY KEY (timestamp_5m, app_name)
             );
         """)
@@ -46,6 +47,30 @@ def init_db(db_path: str) -> None:
                 PRIMARY KEY (pid, process_name)
             );
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS power_events (
+                ts_epoch    REAL NOT NULL,
+                event_type  TEXT NOT NULL,
+                reason_raw  TEXT,
+                PRIMARY KEY (ts_epoch, event_type)
+            );
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS gaps (
+                start_epoch     REAL NOT NULL,
+                end_epoch       REAL NOT NULL,
+                classification  TEXT NOT NULL,
+                PRIMARY KEY (start_epoch, end_epoch)
+            );
+        """)
+        # Schema migration to add gap_classification column if not present
+        try:
+            cursor = conn.execute("PRAGMA table_info(usage_5m);")
+            columns = [row["name"] for row in cursor.fetchall()]
+            if "gap_classification" not in columns:
+                conn.execute("ALTER TABLE usage_5m ADD COLUMN gap_classification TEXT;")
+        except Exception:
+            pass
     conn.close()
 
 def load_process_states(db_path: str) -> Dict[Tuple[int, str], Tuple[int, int, float]]:
@@ -91,22 +116,43 @@ def prune_stale_process_states(db_path: str, max_age_seconds: Optional[float] = 
         conn.execute("DELETE FROM process_state WHERE last_seen_epoch < ?", (cutoff,))
     conn.close()
 
-def record_usage_deltas(db_path: str, timestamp_5m: str, day_str: str, deltas: Dict[str, Tuple[int, int]], is_poll: bool = True) -> None:
+def record_usage_deltas(db_path: str, timestamp_5m: str, day_str: str, deltas: Dict[str, Tuple[int, int]], is_poll: bool = True, gap_classification: Optional[str] = None) -> None:
     if not deltas:
         return
     conn = get_connection(db_path)
     with conn:
         conn.executemany("""
-            INSERT INTO usage_5m (timestamp_5m, day, app_name, bytes_in, bytes_out, sample_count)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO usage_5m (timestamp_5m, day, app_name, bytes_in, bytes_out, sample_count, gap_classification)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(timestamp_5m, app_name) DO UPDATE SET
                 bytes_in = bytes_in + excluded.bytes_in,
                 bytes_out = bytes_out + excluded.bytes_out,
-                sample_count = sample_count + excluded.sample_count
+                sample_count = sample_count + excluded.sample_count,
+                gap_classification = excluded.gap_classification
         """, [
-            (timestamp_5m, day_str, app_name, din, dout, 1 if is_poll else 0)
+            (timestamp_5m, day_str, app_name, din, dout, 1 if is_poll else 0, gap_classification)
             for app_name, (din, dout) in deltas.items()
         ])
+    conn.close()
+
+def record_power_events(db_path: str, events: List[Tuple[float, str, str]]) -> None:
+    if not events:
+        return
+    conn = get_connection(db_path)
+    with conn:
+        conn.executemany("""
+            INSERT OR IGNORE INTO power_events (ts_epoch, event_type, reason_raw)
+            VALUES (?, ?, ?)
+        """, events)
+    conn.close()
+
+def record_gap(db_path: str, start_epoch: float, end_epoch: float, classification: str) -> None:
+    conn = get_connection(db_path)
+    with conn:
+        conn.execute("""
+            INSERT OR REPLACE INTO gaps (start_epoch, end_epoch, classification)
+            VALUES (?, ?, ?)
+        """, (start_epoch, end_epoch, classification))
     conn.close()
 
 def query_usage_totals(db_path: str, days: Optional[int] = None, app_filter: Optional[str] = None) -> List[Dict]:
