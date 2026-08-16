@@ -268,6 +268,34 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             background: rgba(56, 189, 248, 0.1);
             color: var(--accent-color);
         }
+
+        .cls-filters {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .cls-filter-label {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .cls-filter-label input[type="checkbox"] {
+            accent-color: var(--accent-color);
+            width: 14px;
+            height: 14px;
+            cursor: pointer;
+        }
+
+        .cls-filter-label:hover {
+            color: var(--text-primary);
+        }
     </style>
 </head>
 <body>
@@ -303,9 +331,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     </div>
 
     <div class="chart-container">
-        <div class="chart-header">
+        <div class="chart-header" style="flex-wrap: wrap; gap: 12px;">
             <div class="chart-title">Transfer Timeline Breakdown</div>
-            <div class="chart-controls">
+            <div class="chart-controls" style="flex-wrap: wrap; gap: 12px;">
                 <div class="date-filter">
                     <input type="datetime-local" id="startDate">
                     <span style="color: var(--text-secondary);">to</span>
@@ -317,6 +345,17 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <button class="btn-granularity active" onclick="switchGranularity('5m', this)">5-Min</button>
                     <button class="btn-granularity" onclick="switchGranularity('hourly', this)">Hourly</button>
                     <button class="btn-granularity" onclick="switchGranularity('daily', this)">Daily</button>
+                </div>
+                <div class="cls-filters" id="clsFilters">
+                    <label class="cls-filter-label">
+                        <input type="checkbox" id="chk-awake" checked onchange="applyFilter()"> Awake
+                    </label>
+                    <label class="cls-filter-label">
+                        <input type="checkbox" id="chk-dark-wake" checked onchange="applyFilter()"> Dark-wake gaps
+                    </label>
+                    <label class="cls-filter-label">
+                        <input type="checkbox" id="chk-sleep-wake" checked onchange="applyFilter()"> Post-wake catch-up bursts
+                    </label>
                 </div>
             </div>
         </div>
@@ -348,11 +387,70 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
     <script>
         const viewsData = __VIEWS_DATA_JSON__;
+        const initiallyExcluded = __CLS_INITIALLY_EXCLUDED__;
 
         const ctx = document.getElementById('usageChart').getContext('2d');
+
+        // ── Stripe pattern cache for dark_wake_only bars ──────────────────────
+        const stripePatternCache = {};
+        function makeStripePattern(baseColor) {
+            const patCanvas = document.createElement('canvas');
+            patCanvas.width = 8;
+            patCanvas.height = 8;
+            const pctx = patCanvas.getContext('2d');
+            // Dark muted background
+            pctx.fillStyle = 'rgba(0,0,0,0.35)';
+            pctx.fillRect(0, 0, 8, 8);
+            // Diagonal stripes in the dataset's color, semi-transparent
+            pctx.strokeStyle = baseColor;
+            pctx.globalAlpha = 0.55;
+            pctx.lineWidth = 2;
+            pctx.beginPath();
+            pctx.moveTo(0, 8); pctx.lineTo(8, 0);
+            pctx.moveTo(-4, 4); pctx.lineTo(4, -4);
+            pctx.moveTo(4, 12); pctx.lineTo(12, 4);
+            pctx.stroke();
+            return ctx.createPattern(patCanvas, 'repeat');
+        }
+        function getStripePattern(color) {
+            if (!stripePatternCache[color]) {
+                stripePatternCache[color] = makeStripePattern(color);
+            }
+            return stripePatternCache[color];
+        }
+
+        // ── Classification helpers ────────────────────────────────────────────
+        // Stores the classifications of bars currently rendered (post-filter).
+        // Used by the tooltip callback to annotate dark_wake_only bars.
+        let currentClassifications = [];
+
+        function classKey(cls) {
+            return cls || 'awake';
+        }
+
+        function getCheckedClassifications() {
+            const checked = new Set();
+            if (document.getElementById('chk-awake').checked)      checked.add('awake');
+            if (document.getElementById('chk-dark-wake').checked)  checked.add('dark_wake_only');
+            if (document.getElementById('chk-sleep-wake').checked) checked.add('sleep_then_full_wake');
+            return checked;
+        }
+
+        // Apply per-bar stripe pattern or solid color based on classification
+        function coloredDatasets(filteredClassifications, baseDatasets) {
+            return baseDatasets.map(ds => {
+                const base = ds.backgroundColor; // single color string from viewsData
+                const perBar = filteredClassifications.map(cls =>
+                    cls === 'dark_wake_only' ? getStripePattern(base) : base
+                );
+                return { ...ds, backgroundColor: perBar };
+            });
+        }
+
+        // ── Chart init (starts empty; applyFilter() renders first frame) ──────
         let currentChart = new Chart(ctx, {
             type: 'bar',
-            data: viewsData['5m'] || { labels: [], datasets: [] },
+            data: { labels: [], datasets: [] },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
@@ -367,20 +465,23 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         grid: { color: '#334155' },
                         ticks: {
                             color: '#94a3b8',
-                            callback: function(value) {
-                                return formatBytesJS(value);
-                            }
+                            callback: function(value) { return formatBytesJS(value); }
                         }
                     }
                 },
                 plugins: {
-                    legend: {
-                        labels: { color: '#f8fafc' }
-                    },
+                    legend: { labels: { color: '#f8fafc' } },
                     tooltip: {
                         callbacks: {
                             label: function(context) {
-                                return context.dataset.label + ': ' + formatBytesJS(context.raw);
+                                let label = context.dataset.label + ': ' + formatBytesJS(context.raw);
+                                const cls = currentClassifications[context.dataIndex];
+                                if (cls === 'dark_wake_only') {
+                                    label += '  ⚠ dark-wake gap';
+                                } else if (cls === 'sleep_then_full_wake') {
+                                    label += '  ↑ post-wake burst';
+                                }
+                                return label;
                             }
                         }
                     }
@@ -391,75 +492,88 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         let currentGranularity = '5m';
 
         window.onload = function() {
+            // Apply initial excluded state from --exclude CLI flag
+            if (initiallyExcluded.includes('dark_wake_only')) {
+                document.getElementById('chk-dark-wake').checked = false;
+            }
+            if (initiallyExcluded.includes('sleep_then_full_wake')) {
+                document.getElementById('chk-sleep-wake').checked = false;
+            }
             initDateInputs();
+            applyFilter();
         };
 
         function initDateInputs() {
-            let labels = viewsData[currentGranularity]?.labels;
+            const labels = viewsData[currentGranularity]?.labels;
             if (labels && labels.length > 0) {
                 document.getElementById('startDate').value = formatForInput(labels[0]);
-                document.getElementById('endDate').value = formatForInput(labels[labels.length - 1]);
+                document.getElementById('endDate').value   = formatForInput(labels[labels.length - 1]);
             }
         }
 
         function formatForInput(labelStr) {
-            if (labelStr.length === 10) {
-                return labelStr + "T00:00";
-            }
-            return labelStr.replace(" ", "T");
+            if (labelStr.length === 10) return labelStr + 'T00:00';
+            return labelStr.replace(' ', 'T');
         }
 
+        // ── Unified filter: date-range ∩ classification ───────────────────────
         function applyFilter() {
-            let startVal = document.getElementById('startDate').value;
-            let endVal = document.getElementById('endDate').value;
-            
-            if (!startVal || !endVal) {
-                currentChart.data = viewsData[currentGranularity];
-                currentChart.update();
-                return;
-            }
+            const startVal = document.getElementById('startDate').value;
+            const endVal   = document.getElementById('endDate').value;
+            const checkedCls = getCheckedClassifications();
 
-            let start = startVal.replace("T", " ");
-            let end = endVal.replace("T", " ");
+            const originalData = viewsData[currentGranularity];
+            if (!originalData) return;
 
-            let originalData = viewsData[currentGranularity];
-            let filteredLabels = [];
-            let filteredDatasets = originalData.datasets.map(ds => ({
-                ...ds,
-                data: []
-            }));
+            const filteredLabels = [];
+            const filteredCls    = [];
+            const filteredDatasets = originalData.datasets.map(ds => ({ ...ds, data: [] }));
 
             for (let i = 0; i < originalData.labels.length; i++) {
-                let label = originalData.labels[i];
-                let compareLabel = label;
-                let compareStart = start;
-                let compareEnd = end;
+                const label = originalData.labels[i];
+                const cls   = classKey(originalData.bucketClassification?.[i]);
 
-                if (currentGranularity === 'daily') {
-                    compareLabel = label.substring(0, 10);
-                    compareStart = start.substring(0, 10);
-                    compareEnd = end.substring(0, 10);
+                // Date-range filter (always pass if inputs are empty)
+                let dateOk = true;
+                if (startVal && endVal) {
+                    let cmpLabel = label;
+                    let cmpStart = startVal.replace('T', ' ');
+                    let cmpEnd   = endVal.replace('T', ' ');
+                    if (currentGranularity === 'daily') {
+                        cmpLabel = label.substring(0, 10);
+                        cmpStart = cmpStart.substring(0, 10);
+                        cmpEnd   = cmpEnd.substring(0, 10);
+                    }
+                    dateOk = cmpLabel >= cmpStart && cmpLabel <= cmpEnd;
                 }
 
-                if (compareLabel >= compareStart && compareLabel <= compareEnd) {
+                // Classification filter
+                const clsOk = checkedCls.has(cls);
+
+                if (dateOk && clsOk) {
                     filteredLabels.push(label);
+                    filteredCls.push(cls);
                     for (let j = 0; j < originalData.datasets.length; j++) {
                         filteredDatasets[j].data.push(originalData.datasets[j].data[i]);
                     }
                 }
             }
 
+            currentClassifications = filteredCls;
             currentChart.data = {
                 labels: filteredLabels,
-                datasets: filteredDatasets
+                datasets: coloredDatasets(filteredCls, filteredDatasets)
             };
             currentChart.update();
         }
 
         function resetFilter() {
             initDateInputs();
-            currentChart.data = viewsData[currentGranularity];
-            currentChart.update();
+            // Re-check all boxes on reset
+            document.getElementById('chk-awake').checked      = true;
+            document.getElementById('chk-dark-wake').checked  = true;
+            document.getElementById('chk-sleep-wake').checked = true;
+            applyFilter();
         }
 
         function switchGranularity(viewKey, btnElement) {
@@ -471,6 +585,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             }
         }
 
+        // ── Utilities ─────────────────────────────────────────────────────────
         function formatBytesJS(bytes) {
             if (bytes === 0) return '0 B';
             const k = 1024;
@@ -480,72 +595,59 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }
 
         function filterTable() {
-            const input = document.getElementById('searchInput');
+            const input  = document.getElementById('searchInput');
             const filter = input.value.toLowerCase();
-            const table = document.getElementById('usageTable');
-            const tr = table.getElementsByTagName('tr');
-
+            const table  = document.getElementById('usageTable');
+            const tr     = table.getElementsByTagName('tr');
             for (let i = 1; i < tr.length; i++) {
                 const td = tr[i].getElementsByTagName('td')[0];
                 if (td) {
                     const txtValue = td.textContent || td.innerText;
-                    if (txtValue.toLowerCase().indexOf(filter) > -1) {
-                        tr[i].style.display = "";
-                    } else {
-                        tr[i].style.display = "none";
-                    }
+                    tr[i].style.display = txtValue.toLowerCase().indexOf(filter) > -1 ? '' : 'none';
                 }
             }
         }
 
         let currentSortCol = -1;
-        let sortAscending = true;
+        let sortAscending  = true;
 
         function sortTable(colIndex, isRaw) {
-            const table = document.getElementById("usageTable");
-            const tbody = table.getElementsByTagName("tbody")[0];
-            const rows = Array.from(tbody.getElementsByTagName("tr"));
-            
+            const table = document.getElementById('usageTable');
+            const tbody = table.getElementsByTagName('tbody')[0];
+            const rows  = Array.from(tbody.getElementsByTagName('tr'));
             if (rows.length === 1 && rows[0].cells.length === 1) return;
 
             if (currentSortCol === colIndex) {
                 sortAscending = !sortAscending;
             } else {
-                sortAscending = true;
+                sortAscending  = true;
                 currentSortCol = colIndex;
             }
 
             rows.sort((a, b) => {
-                let cellA = a.getElementsByTagName("td")[colIndex];
-                let cellB = b.getElementsByTagName("td")[colIndex];
-                
+                let cellA = a.getElementsByTagName('td')[colIndex];
+                let cellB = b.getElementsByTagName('td')[colIndex];
                 let valA, valB;
                 if (isRaw) {
-                    valA = parseInt(cellA.getAttribute("data-raw") || 0, 10);
-                    valB = parseInt(cellB.getAttribute("data-raw") || 0, 10);
+                    valA = parseInt(cellA.getAttribute('data-raw') || 0, 10);
+                    valB = parseInt(cellB.getAttribute('data-raw') || 0, 10);
                 } else if (colIndex === 4) {
                     valA = parseInt(cellA.textContent || cellA.innerText, 10);
                     valB = parseInt(cellB.textContent || cellB.innerText, 10);
                 } else {
-                    valA = cellA.textContent || cellA.innerText;
-                    valB = cellB.textContent || cellB.innerText;
-                    valA = valA.toLowerCase();
-                    valB = valB.toLowerCase();
+                    valA = (cellA.textContent || cellA.innerText).toLowerCase();
+                    valB = (cellB.textContent || cellB.innerText).toLowerCase();
                 }
-
                 if (valA < valB) return sortAscending ? -1 : 1;
-                if (valA > valB) return sortAscending ? 1 : -1;
+                if (valA > valB) return sortAscending ?  1 : -1;
                 return 0;
             });
 
-            const ths = table.getElementsByTagName("th");
+            const ths = table.getElementsByTagName('th');
             for (let i = 0; i < ths.length; i++) {
                 ths[i].innerHTML = ths[i].innerHTML.replace(/ [▲▼]/, '');
-                if (i === colIndex) {
-                    ths[i].innerHTML += sortAscending ? ' ▲' : ' ▼';
-                }
+                if (i === colIndex) ths[i].innerHTML += sortAscending ? ' ▲' : ' ▼';
             }
-
             rows.forEach(row => tbody.appendChild(row));
         }
     </script>
@@ -555,6 +657,19 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
 def build_view_dataset(records: List[Dict], time_key_name: str, top_apps: List[str], colors: List[str]) -> Dict:
     distinct_times = sorted(list(set(r[time_key_name] for r in records)))
+
+    # Build per-bucket classification map: use MAX(gap_classification) already computed
+    # by the SQL query. All rows for the same timestamp share the same classification,
+    # so the first non-None value wins. NULL/None → 'awake'.
+    bucket_cls_map: Dict[str, str] = {}
+    for r in records:
+        t = r[time_key_name]
+        cls = r.get("gap_classification")
+        if cls and t not in bucket_cls_map:
+            bucket_cls_map[t] = cls
+
+    bucket_classifications = [bucket_cls_map.get(t) or "awake" for t in distinct_times]
+
     datasets = []
 
     for idx, app in enumerate(top_apps):
@@ -583,18 +698,19 @@ def build_view_dataset(records: List[Dict], time_key_name: str, top_apps: List[s
 
     return {
         "labels": distinct_times,
-        "datasets": datasets
+        "datasets": datasets,
+        "bucketClassification": bucket_classifications
     }
 
-def generate_html_report(db_path: str, days: Optional[int] = None, output_path: str = DEFAULT_HTML_PATH) -> str:
+def generate_html_report(db_path: str, days: Optional[int] = None, output_path: str = DEFAULT_HTML_PATH, exclude_classifications: Optional[List[str]] = None) -> str:
     cfg = load_config()
     if days is None:
         days = cfg["default_report_days"]
-        
-    totals = query_usage_totals(db_path, days=days)
-    daily_records = query_usage_by_day(db_path, days=days)
-    hourly_records = query_usage_by_hour(db_path, days=days)
-    records_5m = query_usage_by_5m(db_path, days=days)
+
+    totals = query_usage_totals(db_path, days=days, exclude_classifications=exclude_classifications)
+    daily_records = query_usage_by_day(db_path, days=days, exclude_classifications=exclude_classifications)
+    hourly_records = query_usage_by_hour(db_path, days=days, exclude_classifications=exclude_classifications)
+    records_5m = query_usage_by_5m(db_path, days=days, exclude_classifications=exclude_classifications)
 
     grand_in = sum(r["total_bytes_in"] or 0 for r in totals)
     grand_out = sum(r["total_bytes_out"] or 0 for r in totals)
@@ -632,6 +748,10 @@ def generate_html_report(db_path: str, days: Optional[int] = None, output_path: 
     import datetime
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    # Checkboxes that should start unchecked (driven by --exclude at generation time)
+    # The full viewsData is still embedded so the user can toggle them back on.
+    cls_initially_excluded = exclude_classifications or []
+
     html_content = HTML_TEMPLATE.replace("__GENERATED_TIME__", now_str)
     html_content = html_content.replace("__TOTAL_TRANSFER__", format_bytes(grand_total))
     html_content = html_content.replace("__TOTAL_IN__", format_bytes(grand_in))
@@ -640,6 +760,7 @@ def generate_html_report(db_path: str, days: Optional[int] = None, output_path: 
     html_content = html_content.replace("__DAYS__", str(days))
     html_content = html_content.replace("__TABLE_ROWS__", table_html)
     html_content = html_content.replace("__VIEWS_DATA_JSON__", json.dumps(views_data))
+    html_content = html_content.replace("__CLS_INITIALLY_EXCLUDED__", json.dumps(cls_initially_excluded))
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
@@ -654,10 +775,25 @@ def main():
     parser.add_argument("--days", type=int, default=cfg["default_report_days"], help=f"Number of past days to include (default: {cfg['default_report_days']})")
     parser.add_argument("--out", type=str, default=DEFAULT_HTML_PATH, help="Output HTML file path")
     parser.add_argument("--open", action="store_true", help="Open generated HTML file in default browser")
+    parser.add_argument(
+        "--exclude", type=str, default=None,
+        metavar="CLASS",
+        help="Comma-separated gap classifications to exclude from the embedded data: dark_wake_only, sleep_then_full_wake. The corresponding dashboard checkboxes will start unchecked (but can be toggled back on interactively)."
+    )
     args = parser.parse_args()
 
+    # Parse --exclude into a list; validate values
+    valid_classes = {"dark_wake_only", "sleep_then_full_wake"}
+    exclude_classifications: Optional[List[str]] = None
+    if args.exclude:
+        parsed = [c.strip() for c in args.exclude.split(",") if c.strip()]
+        invalid = [c for c in parsed if c not in valid_classes]
+        if invalid:
+            parser.error(f"Unknown classification(s): {', '.join(invalid)}. Valid values: {', '.join(sorted(valid_classes))}")
+        exclude_classifications = parsed if parsed else None
+
     db_path = get_db_path(args.db)
-    path = generate_html_report(db_path, days=args.days, output_path=args.out)
+    path = generate_html_report(db_path, days=args.days, output_path=args.out, exclude_classifications=exclude_classifications)
     print(f"HTML dashboard generated: file://{path}")
 
     if args.open:
@@ -665,3 +801,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

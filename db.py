@@ -155,7 +155,7 @@ def record_gap(db_path: str, start_epoch: float, end_epoch: float, classificatio
         """, (start_epoch, end_epoch, classification))
     conn.close()
 
-def query_usage_totals(db_path: str, days: Optional[int] = None, app_filter: Optional[str] = None) -> List[Dict]:
+def query_usage_totals(db_path: str, days: Optional[int] = None, app_filter: Optional[str] = None, exclude_classifications: Optional[List[str]] = None) -> List[Dict]:
     conn = get_connection(db_path)
     try:
         sql = """
@@ -179,6 +179,11 @@ def query_usage_totals(db_path: str, days: Optional[int] = None, app_filter: Opt
             where_clauses.append("app_name LIKE ?")
             params.append(f"%{app_filter}%")
 
+        if exclude_classifications:
+            placeholders = ",".join("?" * len(exclude_classifications))
+            where_clauses.append(f"(gap_classification IS NULL OR gap_classification NOT IN ({placeholders}))")
+            params.extend(exclude_classifications)
+
         if where_clauses:
             sql += " WHERE " + " AND ".join(where_clauses)
 
@@ -190,7 +195,7 @@ def query_usage_totals(db_path: str, days: Optional[int] = None, app_filter: Opt
     finally:
         conn.close()
 
-def query_usage_by_day(db_path: str, days: Optional[int] = None, app_filter: Optional[str] = None) -> List[Dict]:
+def query_usage_by_day(db_path: str, days: Optional[int] = None, app_filter: Optional[str] = None, exclude_classifications: Optional[List[str]] = None) -> List[Dict]:
     conn = get_connection(db_path)
     try:
         sql = """
@@ -198,7 +203,8 @@ def query_usage_by_day(db_path: str, days: Optional[int] = None, app_filter: Opt
                    SUM(bytes_in) as bytes_in,
                    SUM(bytes_out) as bytes_out,
                    SUM(bytes_in + bytes_out) as total_bytes,
-                   SUM(sample_count) as sample_count
+                   SUM(sample_count) as sample_count,
+                   MAX(gap_classification) as gap_classification
             FROM usage_5m
         """
         where_clauses = []
@@ -211,6 +217,11 @@ def query_usage_by_day(db_path: str, days: Optional[int] = None, app_filter: Opt
         if app_filter:
             where_clauses.append("app_name LIKE ?")
             params.append(f"%{app_filter}%")
+
+        if exclude_classifications:
+            placeholders = ",".join("?" * len(exclude_classifications))
+            where_clauses.append(f"(gap_classification IS NULL OR gap_classification NOT IN ({placeholders}))")
+            params.extend(exclude_classifications)
 
         if where_clauses:
             sql += " WHERE " + " AND ".join(where_clauses)
@@ -223,7 +234,7 @@ def query_usage_by_day(db_path: str, days: Optional[int] = None, app_filter: Opt
     finally:
         conn.close()
 
-def query_usage_by_hour(db_path: str, days: Optional[int] = None, app_filter: Optional[str] = None) -> List[Dict]:
+def query_usage_by_hour(db_path: str, days: Optional[int] = None, app_filter: Optional[str] = None, exclude_classifications: Optional[List[str]] = None) -> List[Dict]:
     conn = get_connection(db_path)
     try:
         sql = """
@@ -232,7 +243,8 @@ def query_usage_by_hour(db_path: str, days: Optional[int] = None, app_filter: Op
                    SUM(bytes_in) as bytes_in,
                    SUM(bytes_out) as bytes_out,
                    SUM(bytes_in + bytes_out) as total_bytes,
-                   SUM(sample_count) as sample_count
+                   SUM(sample_count) as sample_count,
+                   MAX(gap_classification) as gap_classification
             FROM usage_5m
         """
         where_clauses = []
@@ -245,6 +257,11 @@ def query_usage_by_hour(db_path: str, days: Optional[int] = None, app_filter: Op
         if app_filter:
             where_clauses.append("app_name LIKE ?")
             params.append(f"%{app_filter}%")
+
+        if exclude_classifications:
+            placeholders = ",".join("?" * len(exclude_classifications))
+            where_clauses.append(f"(gap_classification IS NULL OR gap_classification NOT IN ({placeholders}))")
+            params.extend(exclude_classifications)
 
         if where_clauses:
             sql += " WHERE " + " AND ".join(where_clauses)
@@ -257,7 +274,7 @@ def query_usage_by_hour(db_path: str, days: Optional[int] = None, app_filter: Op
     finally:
         conn.close()
 
-def query_usage_by_5m(db_path: str, days: Optional[int] = None, app_filter: Optional[str] = None) -> List[Dict]:
+def query_usage_by_5m(db_path: str, days: Optional[int] = None, app_filter: Optional[str] = None, exclude_classifications: Optional[List[str]] = None) -> List[Dict]:
     conn = get_connection(db_path)
     try:
         sql = """
@@ -265,7 +282,8 @@ def query_usage_by_5m(db_path: str, days: Optional[int] = None, app_filter: Opti
                    SUM(bytes_in) as bytes_in,
                    SUM(bytes_out) as bytes_out,
                    SUM(bytes_in + bytes_out) as total_bytes,
-                   SUM(sample_count) as sample_count
+                   SUM(sample_count) as sample_count,
+                   MAX(gap_classification) as gap_classification
             FROM usage_5m
         """
         where_clauses = []
@@ -278,6 +296,11 @@ def query_usage_by_5m(db_path: str, days: Optional[int] = None, app_filter: Opti
         if app_filter:
             where_clauses.append("app_name LIKE ?")
             params.append(f"%{app_filter}%")
+
+        if exclude_classifications:
+            placeholders = ",".join("?" * len(exclude_classifications))
+            where_clauses.append(f"(gap_classification IS NULL OR gap_classification NOT IN ({placeholders}))")
+            params.extend(exclude_classifications)
 
         if where_clauses:
             sql += " WHERE " + " AND ".join(where_clauses)

@@ -44,9 +44,9 @@ def print_table(headers: List[str], rows: List[List[str]]) -> None:
         line_str = " | ".join(row[i].ljust(col_widths[i]) for i in range(len(row)))
         print(line_str)
 
-def generate_totals_report(db_path: str, days: Optional[int], app_filter: Optional[str], fmt: str) -> None:
-    results = query_usage_totals(db_path, days=days, app_filter=app_filter)
-    
+def generate_totals_report(db_path: str, days: Optional[int], app_filter: Optional[str], fmt: str, exclude_classifications: Optional[List[str]] = None) -> None:
+    results = query_usage_totals(db_path, days=days, app_filter=app_filter, exclude_classifications=exclude_classifications)
+
     if fmt == "json":
         print(json.dumps(results, indent=2))
         return
@@ -84,13 +84,16 @@ def generate_totals_report(db_path: str, days: Optional[int], app_filter: Option
             str(period)
         ])
 
-    print(f"\n--- NetTally Usage Report (Totals: {'Last ' + str(days) + ' days' if days else 'All time'}) ---")
+    period_label = 'Last ' + str(days) + ' days' if days else 'All time'
+    print(f"\n--- NetTally Usage Report (Totals: {period_label}) ---")
+    if exclude_classifications:
+        print(f"[Excluded classifications: {', '.join(exclude_classifications)}]")
     print_table(headers, rows)
     if rows:
         print(f"\nTOTAL: Received {format_bytes(grand_in)} | Sent {format_bytes(grand_out)} | Total {format_bytes(grand_total)} across {len(rows)} apps.")
 
-def generate_by_day_report(db_path: str, days: Optional[int], app_filter: Optional[str], fmt: str) -> None:
-    results = query_usage_by_day(db_path, days=days, app_filter=app_filter)
+def generate_by_day_report(db_path: str, days: Optional[int], app_filter: Optional[str], fmt: str, exclude_classifications: Optional[List[str]] = None) -> None:
+    results = query_usage_by_day(db_path, days=days, app_filter=app_filter, exclude_classifications=exclude_classifications)
 
     if fmt == "json":
         print(json.dumps(results, indent=2))
@@ -114,10 +117,12 @@ def generate_by_day_report(db_path: str, days: Optional[int], app_filter: Option
         ])
 
     print(f"\n--- NetTally Usage Report (Daily Breakdown) ---")
+    if exclude_classifications:
+        print(f"[Excluded classifications: {', '.join(exclude_classifications)}]")
     print_table(headers, rows)
 
-def generate_by_hour_report(db_path: str, days: Optional[int], app_filter: Optional[str], fmt: str) -> None:
-    results = query_usage_by_hour(db_path, days=days, app_filter=app_filter)
+def generate_by_hour_report(db_path: str, days: Optional[int], app_filter: Optional[str], fmt: str, exclude_classifications: Optional[List[str]] = None) -> None:
+    results = query_usage_by_hour(db_path, days=days, app_filter=app_filter, exclude_classifications=exclude_classifications)
 
     if fmt == "json":
         print(json.dumps(results, indent=2))
@@ -141,10 +146,12 @@ def generate_by_hour_report(db_path: str, days: Optional[int], app_filter: Optio
         ])
 
     print(f"\n--- NetTally Usage Report (Hourly Breakdown) ---")
+    if exclude_classifications:
+        print(f"[Excluded classifications: {', '.join(exclude_classifications)}]")
     print_table(headers, rows)
 
-def generate_by_5m_report(db_path: str, days: Optional[int], app_filter: Optional[str], fmt: str) -> None:
-    results = query_usage_by_5m(db_path, days=days, app_filter=app_filter)
+def generate_by_5m_report(db_path: str, days: Optional[int], app_filter: Optional[str], fmt: str, exclude_classifications: Optional[List[str]] = None) -> None:
+    results = query_usage_by_5m(db_path, days=days, app_filter=app_filter, exclude_classifications=exclude_classifications)
 
     if fmt == "json":
         print(json.dumps(results, indent=2))
@@ -168,6 +175,8 @@ def generate_by_5m_report(db_path: str, days: Optional[int], app_filter: Optiona
         ])
 
     print(f"\n--- NetTally Usage Report (5-Minute Block Breakdown) ---")
+    if exclude_classifications:
+        print(f"[Excluded classifications: {', '.join(exclude_classifications)}]")
     print_table(headers, rows)
 
 from config import load_config
@@ -184,6 +193,11 @@ def main():
     parser.add_argument("--today", action="store_true", help="Show usage for today only")
     parser.add_argument("--app", type=str, default=None, help="Filter usage by specific app name (case-insensitive substring match)")
     parser.add_argument("--format", choices=["table", "csv", "json"], default="table", help="Output format (default: table)")
+    parser.add_argument(
+        "--exclude", type=str, default=None,
+        metavar="CLASS",
+        help="Comma-separated gap classifications to exclude: dark_wake_only, sleep_then_full_wake (e.g. --exclude dark_wake_only,sleep_then_full_wake)"
+    )
     args = parser.parse_args()
 
     db_path = get_db_path(args.db)
@@ -194,14 +208,25 @@ def main():
     elif args.today:
         days_filter = 0
 
+    # Parse --exclude into a list; drop unknown/empty tokens
+    valid_classes = {"dark_wake_only", "sleep_then_full_wake"}
+    exclude_classifications: Optional[List[str]] = None
+    if args.exclude:
+        parsed = [c.strip() for c in args.exclude.split(",") if c.strip()]
+        invalid = [c for c in parsed if c not in valid_classes]
+        if invalid:
+            parser.error(f"Unknown classification(s): {', '.join(invalid)}. Valid values: {', '.join(sorted(valid_classes))}")
+        exclude_classifications = parsed if parsed else None
+
     if args.by_5m:
-        generate_by_5m_report(db_path, days=days_filter, app_filter=args.app, fmt=args.format)
+        generate_by_5m_report(db_path, days=days_filter, app_filter=args.app, fmt=args.format, exclude_classifications=exclude_classifications)
     elif args.by_hour:
-        generate_by_hour_report(db_path, days=days_filter, app_filter=args.app, fmt=args.format)
+        generate_by_hour_report(db_path, days=days_filter, app_filter=args.app, fmt=args.format, exclude_classifications=exclude_classifications)
     elif args.by_day:
-        generate_by_day_report(db_path, days=days_filter, app_filter=args.app, fmt=args.format)
+        generate_by_day_report(db_path, days=days_filter, app_filter=args.app, fmt=args.format, exclude_classifications=exclude_classifications)
     else:
-        generate_totals_report(db_path, days=days_filter, app_filter=args.app, fmt=args.format)
+        generate_totals_report(db_path, days=days_filter, app_filter=args.app, fmt=args.format, exclude_classifications=exclude_classifications)
 
 if __name__ == "__main__":
     main()
+
