@@ -195,7 +195,7 @@ def query_usage_totals(db_path: str, days: Optional[int] = None, app_filter: Opt
     finally:
         conn.close()
 
-def query_usage_by_day(db_path: str, days: Optional[int] = None, app_filter: Optional[str] = None, exclude_classifications: Optional[List[str]] = None) -> List[Dict]:
+def query_usage_by_day(db_path: str, days: Optional[int] = None, app_filter: Optional[str] = None, exclude_classifications: Optional[List[str]] = None, only_classification: Optional[str] = None) -> List[Dict]:
     conn = get_connection(db_path)
     try:
         sql = """
@@ -218,10 +218,21 @@ def query_usage_by_day(db_path: str, days: Optional[int] = None, app_filter: Opt
             where_clauses.append("app_name LIKE ?")
             params.append(f"%{app_filter}%")
 
+        # Exclude-list behavior
         if exclude_classifications:
             placeholders = ",".join("?" * len(exclude_classifications))
             where_clauses.append(f"(gap_classification IS NULL OR gap_classification NOT IN ({placeholders}))")
             params.extend(exclude_classifications)
+
+        # Exact-match classification filter (optional). If provided, it takes precedence
+        # over exclude_classifications for clarity when callers opt-in.
+        if only_classification is not None:
+            if only_classification == 'awake':
+                # Treat explicit 'unknown_gap' as awake so it is included in awake-layer queries
+                where_clauses.append("(gap_classification IS NULL OR gap_classification = 'unknown_gap')")
+            else:
+                where_clauses.append("gap_classification = ?")
+                params.append(only_classification)
 
         if where_clauses:
             sql += " WHERE " + " AND ".join(where_clauses)
@@ -234,7 +245,7 @@ def query_usage_by_day(db_path: str, days: Optional[int] = None, app_filter: Opt
     finally:
         conn.close()
 
-def query_usage_by_hour(db_path: str, days: Optional[int] = None, app_filter: Optional[str] = None, exclude_classifications: Optional[List[str]] = None) -> List[Dict]:
+def query_usage_by_hour(db_path: str, days: Optional[int] = None, app_filter: Optional[str] = None, exclude_classifications: Optional[List[str]] = None, only_classification: Optional[str] = None) -> List[Dict]:
     conn = get_connection(db_path)
     try:
         sql = """
@@ -258,10 +269,21 @@ def query_usage_by_hour(db_path: str, days: Optional[int] = None, app_filter: Op
             where_clauses.append("app_name LIKE ?")
             params.append(f"%{app_filter}%")
 
+        # Exclude-list behavior
         if exclude_classifications:
             placeholders = ",".join("?" * len(exclude_classifications))
             where_clauses.append(f"(gap_classification IS NULL OR gap_classification NOT IN ({placeholders}))")
             params.extend(exclude_classifications)
+
+        # Exact-match classification filter (optional). If provided, it takes precedence
+        # over exclude_classifications for clarity when callers opt-in.
+        if only_classification is not None:
+            if only_classification == 'awake':
+                # Treat explicit 'unknown_gap' as awake so it is included in awake-layer queries
+                where_clauses.append("(gap_classification IS NULL OR gap_classification = 'unknown_gap')")
+            else:
+                where_clauses.append("gap_classification = ?")
+                params.append(only_classification)
 
         if where_clauses:
             sql += " WHERE " + " AND ".join(where_clauses)

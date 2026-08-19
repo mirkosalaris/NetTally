@@ -425,7 +425,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         let currentClassifications = [];
 
         function classKey(cls) {
-            return cls || 'awake';
+            // Fold both NULL/undefined and explicit 'unknown_gap' into 'awake'
+            if (cls === 'unknown_gap' || cls == null) return 'awake';
+            return cls;
         }
 
         function getCheckedClassifications() {
@@ -436,13 +438,48 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             return checked;
         }
 
-        // Apply per-bar stripe pattern or solid color based on classification
-        function coloredDatasets(filteredClassifications, baseDatasets) {
-            return baseDatasets.map(ds => {
+        // Build combined dataset for hourly/daily by summing selected layers elementwise.
+        function buildCombinedDataForGranularity(granularity, checkedCls) {
+            const original = viewsData[granularity];
+            if (!original) return null;
+            if (granularity === '5m') return original;
+
+            const labels = original.labels || [];
+            const layers = original.layers || {};
+
+            // choose a reference datasets list to copy labels/colors
+            const refLayer = layers['awake'] || Object.values(layers)[0];
+            if (!refLayer) return { labels: [], datasets: [], bucketClassification: [] };
+
+            const ndatasets = refLayer.datasets.length;
+            const datasets = [];
+            for (let j = 0; j < ndatasets; j++) {
+                const refDs = refLayer.datasets[j] || { label: 'Unknown', data: [], backgroundColor: '#94a3b8' };
+                const combinedData = labels.map((_, i) => {
+                    let sum = 0;
+                    for (const layerName of Object.keys(layers)) {
+                        if (!checkedCls.has(layerName)) continue;
+                        const lds = layers[layerName].datasets[j];
+                        if (lds && Array.isArray(lds.data)) sum += lds.data[i] || 0;
+                    }
+                    return sum;
+                });
+                datasets.push({ label: refDs.label, data: combinedData, backgroundColor: refDs.backgroundColor });
+            }
+
+            // Per-dataset classifications (for stripe/tooltip) are computed in applyFilter(),
+            // where checkbox state is available.
+            return { labels, datasets, layers };
+        }
+
+        // Apply per-bar stripe pattern or solid color based on per-dataset classifications
+        function coloredDatasets(perDatasetClassifications, baseDatasets) {
+            return baseDatasets.map((ds, datasetIndex) => {
                 const base = ds.backgroundColor; // single color string from viewsData
-                const perBar = filteredClassifications.map(cls =>
-                    cls === 'dark_wake_only' ? getStripePattern(base) : base
-                );
+                const perBar = perDatasetClassifications.map(clsArr => {
+                    const cls = clsArr && clsArr[datasetIndex];
+                    return cls === 'dark_wake_only' ? getStripePattern(base) : base;
+                });
                 return { ...ds, backgroundColor: perBar };
             });
         }
@@ -475,7 +512,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                         callbacks: {
                             label: function(context) {
                                 let label = context.dataset.label + ': ' + formatBytesJS(context.raw);
-                                const cls = currentClassifications[context.dataIndex];
+                                const perLabel = currentClassifications[context.dataIndex] || [];
+                                const cls = perLabel[context.datasetIndex];
                                 if (cls === 'dark_wake_only') {
                                     label += '  ⚠ dark-wake gap';
                                 } else if (cls === 'sleep_then_full_wake') {
@@ -521,19 +559,92 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             const startVal = document.getElementById('startDate').value;
             const endVal   = document.getElementById('endDate').value;
             const checkedCls = getCheckedClassifications();
-
             const originalData = viewsData[currentGranularity];
             if (!originalData) return;
 
+            if (currentGranularity === '5m') {
+                const filteredLabels = [];
+                const filteredCls    = [];
+                const filteredDatasets = originalData.datasets.map(ds => ({ ...ds, data: [] }));
+
+                for (let i = 0; i < originalData.labels.length; i++) {
+                    const label = originalData.labels[i];
+                    const cls   = classKey(originalData.bucketClassification?.[i]);
+
+                    // Date-range filter (always pass if inputs are empty)
+                    let dateOk = true;
+                    if (startVal && endVal) {
+                        let cmpLabel = label;
+                        let cmpStart = startVal.replace('T', ' ');
+                        let cmpEnd   = endVal.replace('T', ' ');
+                        if (currentGranularity === 'daily') {
+                            cmpLabel = label.substring(0, 10);
+                            cmpStart = cmpStart.substring(0, 10);
+                            cmpEnd   = cmpEnd.substring(0, 10);
+                        }
+                        dateOk = cmpLabel >= cmpStart && cmpLabel <= cmpEnd;
+                    }
+
+                    // Classification filter: per-row classification must be checked
+                    const clsOk = checkedCls.has(cls);
+
+                    if (dateOk && clsOk) {
+                        filteredLabels.push(label);
+                        filteredCls.push(cls);
+                        for (let j = 0; j < originalData.datasets.length; j++) {
+                            filteredDatasets[j].data.push(originalData.datasets[j].data[i]);
+                        }
+                    }
+                }
+
+                currentClassifications = filteredCls.map(c => [c]); // normalize to per-dataset shape
+                currentChart.data = {
+                    labels: filteredLabels,
+                    datasets: coloredDatasets(currentClassifications, filteredDatasets)
+                };
+                currentChart.update();
+                return;
+            }
+
+            // Hourly / Daily: sum selected layers client-side (labels are master-aligned)
+            const combined = buildCombinedDataForGranularity(currentGranularity, checkedCls);
+            const labels = combined.labels || [];
+            const layers = combined.layers || {};
+            const combinedDatasets = combined.datasets || [];
+
+            // Compute per-label per-dataset classifications for stripe/tooltip decisions
+            // Stripe/tooltip classification must reflect what's actually summed into the
+            // visible bar, not the raw per-layer values regardless of checkbox state.
+            // A layer's contribution only counts here if its checkbox is checked --
+            // otherwise a hour that mixes e.g. awake + dark-wake traffic would keep
+            // "seeing" the unchecked awake bytes and never render as exclusively dark-wake.
+            const perDatasetClassifications = labels.map((_, i) => {
+                const arr = [];
+                for (let j = 0; j < combinedDatasets.length; j++) {
+                    const awakeRaw = (layers['awake'] && layers['awake'].datasets[j] && layers['awake'].datasets[j].data[i]) || 0;
+                    const darkRaw  = (layers['dark_wake_only'] && layers['dark_wake_only'].datasets[j] && layers['dark_wake_only'].datasets[j].data[i]) || 0;
+                    const sleepRaw = (layers['sleep_then_full_wake'] && layers['sleep_then_full_wake'].datasets[j] && layers['sleep_then_full_wake'].datasets[j].data[i]) || 0;
+
+                    const awakeVal = checkedCls.has('awake') ? awakeRaw : 0;
+                    const darkVal  = checkedCls.has('dark_wake_only') ? darkRaw : 0;
+                    const sleepVal = checkedCls.has('sleep_then_full_wake') ? sleepRaw : 0;
+
+                    let cls = null;
+                    if (darkVal > 0 && awakeVal === 0 && sleepVal === 0) cls = 'dark_wake_only';
+                    else if (sleepVal > 0 && awakeVal === 0 && darkVal === 0) cls = 'sleep_then_full_wake';
+                    else if (awakeVal > 0) cls = 'awake';
+                    arr.push(cls);
+                }
+                return arr;
+            });
+
+            // Date-range filtering (keep labels but zero-pad dataset values outside range)
             const filteredLabels = [];
-            const filteredCls    = [];
-            const filteredDatasets = originalData.datasets.map(ds => ({ ...ds, data: [] }));
+            const filteredDatasets = combinedDatasets.map(ds => ({ ...ds, data: [] }));
+            const filteredClassifications = [];
 
-            for (let i = 0; i < originalData.labels.length; i++) {
-                const label = originalData.labels[i];
-                const cls   = classKey(originalData.bucketClassification?.[i]);
-
-                // Date-range filter (always pass if inputs are empty)
+            for (let i = 0; i < labels.length; i++) {
+                const label = labels[i];
                 let dateOk = true;
                 if (startVal && endVal) {
                     let cmpLabel = label;
@@ -547,22 +658,19 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     dateOk = cmpLabel >= cmpStart && cmpLabel <= cmpEnd;
                 }
 
-                // Classification filter
-                const clsOk = checkedCls.has(cls);
-
-                if (dateOk && clsOk) {
+                if (dateOk) {
                     filteredLabels.push(label);
-                    filteredCls.push(cls);
-                    for (let j = 0; j < originalData.datasets.length; j++) {
-                        filteredDatasets[j].data.push(originalData.datasets[j].data[i]);
+                    filteredClassifications.push(perDatasetClassifications[i]);
+                    for (let j = 0; j < combinedDatasets.length; j++) {
+                        filteredDatasets[j].data.push(combinedDatasets[j].data[i] || 0);
                     }
                 }
             }
 
-            currentClassifications = filteredCls;
+            currentClassifications = filteredClassifications;
             currentChart.data = {
                 labels: filteredLabels,
-                datasets: coloredDatasets(filteredCls, filteredDatasets)
+                datasets: coloredDatasets(filteredClassifications, filteredDatasets)
             };
             currentChart.update();
         }
@@ -739,10 +847,63 @@ def generate_html_report(db_path: str, days: Optional[int] = None, output_path: 
         '#fb7185', '#34d399', '#fbbf24', '#a3e635', '#94a3b8'
     ]
 
+    # Build layered views for hourly/daily: master aligned labels + per-classification layers
+    def align_layer(master_labels, layer_records, time_key_name, force_include_other: bool = False):
+        datasets = []
+        for idx, app in enumerate(top_apps):
+            color = colors[idx % len(colors)]
+            data = []
+            for t in master_labels:
+                bytes_sum = sum(r["total_bytes"] for r in layer_records if r[time_key_name] == t and r["app_name"] == app)
+                data.append(bytes_sum)
+            datasets.append({
+                "label": app,
+                "data": data,
+                "backgroundColor": color
+            })
+
+        # Other Apps
+        other_data = []
+        for t in master_labels:
+            bytes_sum = sum(r["total_bytes"] for r in layer_records if r[time_key_name] == t and r["app_name"] not in top_apps)
+            other_data.append(bytes_sum)
+        if force_include_other or any(v > 0 for v in other_data):
+            datasets.append({
+                "label": "Other Apps",
+                "data": other_data,
+                "backgroundColor": colors[-1]
+            })
+
+        return datasets
+
+    # Master label axes (authoritative, unfiltered)
+    hourly_master_records = query_usage_by_hour(db_path, days=days, exclude_classifications=exclude_classifications)
+    daily_master_records = query_usage_by_day(db_path, days=days, exclude_classifications=exclude_classifications)
+
+    hourly_labels = sorted(list({r["timestamp_hour"] for r in hourly_master_records}))
+    daily_labels = sorted(list({r["day"] for r in daily_master_records}))
+
+    classifications = ["awake", "dark_wake_only", "sleep_then_full_wake"]
+
+    hourly_layers = {}
+    daily_layers = {}
+    for cls in classifications:
+        hr_recs = query_usage_by_hour(db_path, days=days, exclude_classifications=exclude_classifications, only_classification=cls)
+        dy_recs = query_usage_by_day(db_path, days=days, exclude_classifications=exclude_classifications, only_classification=cls)
+        # Force inclusion of an "Other Apps" series if the master (unfiltered) records contain any below-top-apps traffic
+        hourly_layers[cls] = {"datasets": align_layer(hourly_labels, hr_recs, "timestamp_hour", force_include_other=any(r["app_name"] not in top_apps and (r["total_bytes"] or 0) > 0 for r in hourly_master_records))}
+        daily_layers[cls] = {"datasets": align_layer(daily_labels, dy_recs, "day", force_include_other=any(r["app_name"] not in top_apps and (r["total_bytes"] or 0) > 0 for r in daily_master_records))}
+
     views_data = {
         "5m": build_view_dataset(records_5m, "timestamp_5m", top_apps, colors),
-        "hourly": build_view_dataset(hourly_records, "timestamp_hour", top_apps, colors),
-        "daily": build_view_dataset(daily_records, "day", top_apps, colors)
+        "hourly": {
+            "labels": hourly_labels,
+            "layers": hourly_layers
+        },
+        "daily": {
+            "labels": daily_labels,
+            "layers": daily_layers
+        }
     }
 
     import datetime

@@ -23,6 +23,7 @@ from config import load_config, DEFAULTS
 import datetime
 from unittest.mock import patch, MagicMock
 from collector import detect_and_classify_gap
+import json
 
 class TestGapClassification(unittest.TestCase):
     def setUp(self):
@@ -241,6 +242,130 @@ class TestDatabaseAndDeltas(unittest.TestCase):
             self.assertIn("5-Min", content)
             self.assertIn("Hourly", content)
             self.assertIn("Daily", content)
+
+    def test_layered_hourly_daily_sum_invariant(self):
+        # Insert multiple 5m rows within the same hour/day with different classifications
+        day_str = "2026-08-07"
+        record_usage_deltas(self.db_path, "2026-08-07 14:00", day_str, {"AppA": (100, 0)}, gap_classification=None)
+        record_usage_deltas(self.db_path, "2026-08-07 14:05", day_str, {"AppA": (50, 0)}, gap_classification='dark_wake_only')
+        record_usage_deltas(self.db_path, "2026-08-07 14:10", day_str, {"AppA": (25, 0)}, gap_classification='sleep_then_full_wake')
+        record_usage_deltas(self.db_path, "2026-08-07 14:15", day_str, {"AppB": (300, 0)}, gap_classification=None)
+
+        # Unfiltered aggregates
+        un_hour = query_usage_by_hour(self.db_path, days=30)
+        un_day = query_usage_by_day(self.db_path, days=30)
+
+        # Layered exact-query aggregates using only_classification
+        layers_hour = {
+            'awake': query_usage_by_hour(self.db_path, days=30, only_classification='awake'),
+            'dark_wake_only': query_usage_by_hour(self.db_path, days=30, only_classification='dark_wake_only'),
+            'sleep_then_full_wake': query_usage_by_hour(self.db_path, days=30, only_classification='sleep_then_full_wake')
+        }
+        layers_day = {
+            'awake': query_usage_by_day(self.db_path, days=30, only_classification='awake'),
+            'dark_wake_only': query_usage_by_day(self.db_path, days=30, only_classification='dark_wake_only'),
+            'sleep_then_full_wake': query_usage_by_day(self.db_path, days=30, only_classification='sleep_then_full_wake')
+        }
+
+        def key_hour(r):
+            return (r['timestamp_hour'], r['app_name'])
+
+        def key_day(r):
+            return (r['day'], r['app_name'])
+
+        un_map_hour = {key_hour(r): r['total_bytes'] for r in un_hour}
+        sums_hour = {}
+        for cls, recs in layers_hour.items():
+            for r in recs:
+                k = key_hour(r)
+                sums_hour[k] = sums_hour.get(k, 0) + r['total_bytes']
+
+        self.assertEqual(un_map_hour, sums_hour)
+
+        un_map_day = {key_day(r): r['total_bytes'] for r in un_day}
+        sums_day = {}
+        for cls, recs in layers_day.items():
+            for r in recs:
+                k = key_day(r)
+                sums_day[k] = sums_day.get(k, 0) + r['total_bytes']
+
+        self.assertEqual(un_map_day, sums_day)
+
+    def test_unknown_gap_counts_as_awake(self):
+        day_str = "2026-08-07"
+        # One explicit awake row and one unknown_gap row in same hour
+        record_usage_deltas(self.db_path, "2026-08-07 14:00", day_str, {"AppX": (100, 0)}, gap_classification=None)
+        record_usage_deltas(self.db_path, "2026-08-07 14:05", day_str, {"AppX": (999, 0)}, gap_classification='unknown_gap')
+
+        un_hour = query_usage_by_hour(self.db_path, days=30)
+        layers_hour = {
+            'awake': query_usage_by_hour(self.db_path, days=30, only_classification='awake'),
+            'dark_wake_only': query_usage_by_hour(self.db_path, days=30, only_classification='dark_wake_only'),
+            'sleep_then_full_wake': query_usage_by_hour(self.db_path, days=30, only_classification='sleep_then_full_wake')
+        }
+
+        def key_hour(r):
+            return (r['timestamp_hour'], r['app_name'])
+
+        un_map_hour = {key_hour(r): r['total_bytes'] for r in un_hour}
+        sums_hour = {}
+        for cls, recs in layers_hour.items():
+            for r in recs:
+                k = key_hour(r)
+                sums_hour[k] = sums_hour.get(k, 0) + r['total_bytes']
+
+        # The unknown_gap row should be counted as awake so the invariant holds
+        self.assertEqual(un_map_hour, sums_hour)
+
+    def test_other_apps_series_uniform_across_layers(self):
+        # Create 8 big apps in awake, and a small 9th app only in dark_wake_only
+        day_str = "2026-08-07"
+        big_apps = [f"App{i}" for i in range(1,9)]
+        for a in big_apps:
+            record_usage_deltas(self.db_path, "2026-08-07 14:00", day_str, {a: (10000, 0)}, gap_classification=None)
+        # small app only in dark_wake_only
+        record_usage_deltas(self.db_path, "2026-08-07 14:00", day_str, {"SmallApp": (50, 0)}, gap_classification='dark_wake_only')
+
+        out_html = os.path.join(self.temp_dir.name, "dashboard_other.html")
+        path = generate_html_report(self.db_path, days=30, output_path=out_html)
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+        start = content.find("const viewsData = ")
+        self.assertNotEqual(start, -1)
+        start += len("const viewsData = ")
+        end = content.find(";\n", start)
+        views = json.loads(content[start:end])
+
+        hourly_layers = views['hourly']['layers']
+        awake_ds = hourly_layers['awake']['datasets']
+        dark_ds = hourly_layers['dark_wake_only']['datasets']
+
+        # Both layers should have the same dataset count (including an Other Apps series)
+        self.assertEqual(len(awake_ds), len(dark_ds))
+        # Last dataset should be labeled "Other Apps"
+        self.assertEqual(awake_ds[-1]['label'], 'Other Apps')
+        self.assertEqual(dark_ds[-1]['label'], 'Other Apps')
+
+    def test_exclude_classification_affects_layers(self):
+        # Awake app and a sleep_then_full_wake app; exclude sleep_then_full_wake and ensure layer zeros
+        day_str = "2026-08-07"
+        record_usage_deltas(self.db_path, "2026-08-07 14:00", day_str, {"KeepApp": (1000, 0)}, gap_classification=None)
+        record_usage_deltas(self.db_path, "2026-08-07 14:00", day_str, {"DropApp": (777, 0)}, gap_classification='sleep_then_full_wake')
+
+        out_html = os.path.join(self.temp_dir.name, "dashboard_exclude.html")
+        path = generate_html_report(self.db_path, days=30, output_path=out_html, exclude_classifications=['sleep_then_full_wake'])
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+        start = content.find("const viewsData = ")
+        self.assertNotEqual(start, -1)
+        start += len("const viewsData = ")
+        end = content.find(";\n", start)
+        views = json.loads(content[start:end])
+
+        sleep_layer = views['hourly']['layers']['sleep_then_full_wake']['datasets']
+        # Sum of all values in the sleep layer should be zero because it was excluded
+        total = sum(sum(ds['data']) for ds in sleep_layer)
+        self.assertEqual(total, 0)
 
 if __name__ == "__main__":
     unittest.main()
