@@ -150,7 +150,8 @@ def detect_and_classify_gap(db_path: str, t0: float, t1: float) -> str:
     events = []
     try:
         res = subprocess.run(["pmset", "-g", "log"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True, timeout=10)
-        pattern = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4})\s+(Sleep|Wake|DarkWake)\b(.*)")
+        # NOTE: (?!\s*Requests\b) excludes "Wake Requests" log lines
+        pattern = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4})\s+(Sleep|Wake|DarkWake)\b(?!\s*Requests\b)(.*)")
         margin = 60.0
         for line in res.stdout.splitlines():
             m = pattern.match(line.strip())
