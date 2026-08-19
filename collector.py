@@ -248,7 +248,7 @@ def main():
         try:
             delta_in, delta_out = poll_once(db_path, process_states, config_path=args.config, gap_classification=gap_class)
             if delta_in > 0 or delta_out > 0:
-                print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Sample recorded: +{delta_in} B in, +{delta_out} B out")
+                print(f"[{datetime.datetime.now().isoformat()}] Sample recorded: +{delta_in} B in, +{delta_out} B out")
         except Exception as e:
             print(f"Error during polling cycle: {e}", file=sys.stderr)
 
