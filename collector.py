@@ -2,6 +2,7 @@
 import argparse
 import datetime
 import os
+import re
 import subprocess
 import sys
 import time
@@ -146,15 +147,32 @@ def poll_once(db_path: str, process_states: Dict[Tuple[int, str], Tuple[int, int
 
     return (total_delta_in, total_delta_out)
 
-def detect_and_classify_gap(db_path: str, t0: float, t1: float) -> str:
+# NOTE: (?!\s*Requests\b) excludes "Wake Requests" log lines
+POWER_EVENT_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4})\s+(Sleep|Wake|DarkWake)\b(?!\s*Requests\b)(.*)")
+
+def fetch_pmset_events(t0: float, t1: float, margin: float = 60.0, tail_lines: Optional[int] = None) -> List[Tuple[float, str, str]]:
+    """
+    Runs `pmset -g log`, parses Sleep/Wake/DarkWake lines, and returns the ones whose
+    timestamp falls within [t0 - margin, t1 + margin] as (epoch, event_type, reason) tuples.
+
+    `pmset -g log` has no native flag to limit its output, and the log can grow very
+    large over weeks of uptime. When `tail_lines` is set, the command is piped through
+    `tail -n <tail_lines>` first to keep the call cheap; this is intended for callers
+    that run frequently (e.g. once per poll) and only care about recent history. Callers
+    that run rarely (e.g. only when an actual gap is detected) should leave it unset to
+    scan the full log.
+    """
     events = []
     try:
-        res = subprocess.run(["pmset", "-g", "log"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True, timeout=10)
-        # NOTE: (?!\s*Requests\b) excludes "Wake Requests" log lines
-        pattern = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4})\s+(Sleep|Wake|DarkWake)\b(?!\s*Requests\b)(.*)")
-        margin = 60.0
+        if tail_lines:
+            res = subprocess.run(
+                f"pmset -g log | tail -n {tail_lines}",
+                shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10
+            )
+        else:
+            res = subprocess.run(["pmset", "-g", "log"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True, timeout=10)
         for line in res.stdout.splitlines():
-            m = pattern.match(line.strip())
+            m = POWER_EVENT_PATTERN.match(line.strip())
             if m:
                 ts_str, event_type, reason = m.groups()
                 try:
@@ -167,6 +185,10 @@ def detect_and_classify_gap(db_path: str, t0: float, t1: float) -> str:
                     continue
     except Exception as e:
         print(f"Error running pmset or parsing: {e}", file=sys.stderr)
+    return events
+
+def detect_and_classify_gap(db_path: str, t0: float, t1: float) -> str:
+    events = fetch_pmset_events(t0, t1)
 
     if events:
         record_power_events(db_path, events)
@@ -203,7 +225,23 @@ def detect_and_classify_gap(db_path: str, t0: float, t1: float) -> str:
     record_gap(db_path, t0, t1, classification)
     return classification
 
-import re
+def check_dark_wake_still_active(db_path: str, since_epoch: float, now_epoch: float) -> str:
+    """
+    Called when the current poll did NOT exceed the gap threshold, but the *previous*
+    poll was classified 'dark_wake_only'.
+    """
+    events = fetch_pmset_events(since_epoch, now_epoch, tail_lines=200)
+
+    if events:
+        record_power_events(db_path, events)
+        has_wake = any(et == 'Wake' for (_, et, _) in events)
+        classification = 'sleep_then_full_wake' if has_wake else 'dark_wake_only'
+    else:
+        # No new events since the last check: nothing contradicts the ongoing dark-wake
+        # state, so keep propagating it.
+        classification = 'dark_wake_only'
+
+    return classification
 
 def main():
     cfg = load_config()
@@ -227,6 +265,7 @@ def main():
     process_states = load_process_states(db_path)
     last_prune = time.time()
     last_poll_epoch = None
+    last_classification = None
 
     if args.once:
         delta_in, delta_out = poll_once(db_path, process_states, config_path=args.config)
@@ -242,8 +281,12 @@ def main():
             gap_threshold = args.interval * cfg.get("gap_threshold_multiplier", 3)
             if time_diff > gap_threshold:
                 gap_class = detect_and_classify_gap(db_path, last_poll_epoch, start_time)
+            elif last_classification == 'dark_wake_only':
+                # This poll arrived on time, but the previous one was still dark-waking.
+                gap_class = check_dark_wake_still_active(db_path, last_poll_epoch, start_time)
 
         last_poll_epoch = start_time
+        last_classification = gap_class
 
         try:
             delta_in, delta_out = poll_once(db_path, process_states, config_path=args.config, gap_classification=gap_class)

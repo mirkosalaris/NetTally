@@ -22,7 +22,7 @@ from html_generator import generate_html_report
 from config import load_config, DEFAULTS
 import datetime
 from unittest.mock import patch, MagicMock
-from collector import detect_and_classify_gap
+from collector import detect_and_classify_gap, check_dark_wake_still_active
 import json
 
 class TestGapClassification(unittest.TestCase):
@@ -77,6 +77,44 @@ class TestGapClassification(unittest.TestCase):
 
         classification = detect_and_classify_gap(self.db_path, 1000, 2000)
         self.assertEqual(classification, 'unknown_gap')
+
+    @patch('subprocess.run')
+    def test_still_dark_wake_propagates_with_no_new_events(self, mock_run):
+        # Sustained dark-wake window (e.g. a long Power Nap sync): no new pmset log
+        # lines since the last check. The previous poll was 'dark_wake_only' and nothing
+        # contradicts it, so it should propagate forward rather than default to awake.
+        mock_res = MagicMock()
+        mock_res.stdout = ""
+        mock_run.return_value = mock_res
+
+        classification = check_dark_wake_still_active(self.db_path, 1000, 1030)
+        self.assertEqual(classification, 'dark_wake_only')
+
+    @patch('subprocess.run')
+    def test_still_dark_wake_propagates_on_darkwake_event(self, mock_run):
+        # A DarkWake log line since the last check confirms we're still dark-waking.
+        mock_output = "2026-08-16 14:05:00 +0200 DarkWake              DarkWake from Deep Idle\n"
+        mock_res = MagicMock()
+        mock_res.stdout = mock_output
+        mock_run.return_value = mock_res
+
+        dt = datetime.datetime.strptime("2026-08-16 14:05:00 +0200", "%Y-%m-%d %H:%M:%S %z")
+        classification = check_dark_wake_still_active(self.db_path, dt.timestamp() - 30, dt.timestamp() + 30)
+        self.assertEqual(classification, 'dark_wake_only')
+
+    @patch('subprocess.run')
+    def test_still_dark_wake_breaks_chain_on_genuine_wake(self, mock_run):
+        # A genuine Wake event since the last check means the dark-wake chain is over --
+        # this poll (and the one that follows it) should be reclassified, not left
+        # tagged as dark-wake or defaulted to plain awake.
+        mock_output = "2026-08-16 14:05:00 +0200 Wake                  Wake due to Power Button\n"
+        mock_res = MagicMock()
+        mock_res.stdout = mock_output
+        mock_run.return_value = mock_res
+
+        dt = datetime.datetime.strptime("2026-08-16 14:05:00 +0200", "%Y-%m-%d %H:%M:%S %z")
+        classification = check_dark_wake_still_active(self.db_path, dt.timestamp() - 30, dt.timestamp() + 30)
+        self.assertEqual(classification, 'sleep_then_full_wake')
 
 class TestConfig(unittest.TestCase):
     def setUp(self):
