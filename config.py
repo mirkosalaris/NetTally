@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import re
@@ -67,3 +68,16 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
         print(f"Warning: Failed to load config from {config_path}: {e}", file=sys.stderr)
 
     return config
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Print a single value from the NetTally config")
+    parser.add_argument("--get", type=str, required=True, help="Config key to print, e.g. polling_interval_seconds")
+    parser.add_argument("--config", type=str, default=None, help="Path to config.json (default: ~/Library/Application Support/NetTally/config.json)")
+    args = parser.parse_args()
+    try:
+        print(load_config(args.config)[args.get])
+    except KeyError:
+        parser.error(f"Unknown config key: {args.get}")
+
+if __name__ == "__main__":
+    main()
