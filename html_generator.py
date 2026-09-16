@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 import argparse
+import datetime
 import json
 import os
-import subprocess
-import sys
 import webbrowser
 from typing import Optional, List, Dict
 
@@ -904,7 +903,6 @@ def generate_html_report(db_path: str, days: Optional[int] = None, output_path: 
         }
     }
 
-    import datetime
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # Checkboxes that should start unchecked (driven by --exclude at generation time)

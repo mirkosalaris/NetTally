@@ -4,6 +4,8 @@ import sys
 import time
 from typing import Dict, List, Tuple, Optional
 
+from config import load_config
+
 DEFAULT_DB_DIR = os.path.expanduser("~/Library/Application Support/NetTally")
 DEFAULT_DB_PATH = os.path.join(DEFAULT_DB_DIR, "usage.db")
 
@@ -104,8 +106,6 @@ def update_process_states(db_path: str, states: Dict[Tuple[int, str], Tuple[int,
             for (pid, proc_name), (bytes_in, bytes_out, last_seen) in states.items()
         ])
     conn.close()
-
-from config import load_config
 
 def prune_stale_process_states(db_path: str, max_age_seconds: Optional[float] = None) -> None:
     if max_age_seconds is None:

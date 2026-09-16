@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 import argparse
 import json
-import sys
-from typing import List, Dict, Optional
+from typing import List, Optional
 
+from config import load_config
 from db import (
     get_db_path,
     query_usage_totals,
@@ -178,8 +178,6 @@ def generate_by_5m_report(db_path: str, days: Optional[int], app_filter: Optiona
     if exclude_classifications:
         print(f"[Excluded classifications: {', '.join(exclude_classifications)}]")
     print_table(headers, rows)
-
-from config import load_config
 
 def main():
     cfg = load_config()
