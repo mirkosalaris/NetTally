@@ -212,9 +212,9 @@ class TestDatabaseAndDeltas(unittest.TestCase):
         self.assertEqual(loaded[(1234, "Chrome")], (100, 200, 1000.0))
 
     def test_usage_5m_recording_and_queries(self):
-        t1 = "2026-08-07 14:00"
-        t2 = "2026-08-07 14:05"
-        day_str = "2026-08-07"
+        day_str = datetime.date.today().isoformat()
+        t1 = f"{day_str} 14:00"
+        t2 = f"{day_str} 14:05"
 
         record_usage_deltas(self.db_path, t1, day_str, {"Google Chrome": (5000, 1000)})
         record_usage_deltas(self.db_path, t1, day_str, {"Google Chrome": (3000, 500), "Slack": (2000, 100)})
@@ -231,7 +231,7 @@ class TestDatabaseAndDeltas(unittest.TestCase):
 
         # Daily query
         by_day = query_usage_by_day(self.db_path, days=30)
-        self.assertEqual(len(by_day), 2) # (Chrome, 2026-08-07) and (Slack, 2026-08-07)
+        self.assertEqual(len(by_day), 2) # (Chrome, {day_str}) and (Slack, {day_str})
 
         # Total query
         totals = query_usage_totals(self.db_path, days=30)
@@ -243,17 +243,19 @@ class TestDatabaseAndDeltas(unittest.TestCase):
     def test_day_boundary_isolation(self):
         # Rows on different days must be stored under separate day values
         # and must not be merged when querying by day.
-        t_day_a = "2026-08-06 23:55"
-        t_day_b = "2026-08-07 00:00"
+        yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+        today = datetime.date.today().isoformat()
+        t_day_a = f"{yesterday} 23:55"
+        t_day_b = f"{today} 00:00"
 
-        record_usage_deltas(self.db_path, t_day_a, "2026-08-06", {"AppA": (100, 100)})
-        record_usage_deltas(self.db_path, t_day_b, "2026-08-07", {"AppA": (200, 200)})
+        record_usage_deltas(self.db_path, t_day_a, yesterday, {"AppA": (100, 100)})
+        record_usage_deltas(self.db_path, t_day_b, today, {"AppA": (200, 200)})
 
         by_day = query_usage_by_day(self.db_path, days=30)
         app_a_records = [r for r in by_day if r["app_name"] == "AppA"]
         self.assertEqual(len(app_a_records), 2)
         days_found = set(r["day"] for r in app_a_records)
-        self.assertEqual(days_found, {"2026-08-06", "2026-08-07"})
+        self.assertEqual(days_found, {yesterday, today})
 
     def test_empty_html_generation(self):
         # Dashboard must render without error and show an empty-state message
@@ -267,8 +269,8 @@ class TestDatabaseAndDeltas(unittest.TestCase):
             self.assertIn("No network usage records found", content)
 
     def test_html_generation(self):
-        t1 = "2026-08-07 14:00"
-        day_str = "2026-08-07"
+        day_str = datetime.date.today().isoformat()
+        t1 = f"{day_str} 14:00"
         record_usage_deltas(self.db_path, t1, day_str, {"Google Chrome": (1000, 500)})
 
         out_html = os.path.join(self.temp_dir.name, "dashboard.html")
@@ -283,11 +285,11 @@ class TestDatabaseAndDeltas(unittest.TestCase):
 
     def test_layered_hourly_daily_sum_invariant(self):
         # Insert multiple 5m rows within the same hour/day with different classifications
-        day_str = "2026-08-07"
-        record_usage_deltas(self.db_path, "2026-08-07 14:00", day_str, {"AppA": (100, 0)}, gap_classification=None)
-        record_usage_deltas(self.db_path, "2026-08-07 14:05", day_str, {"AppA": (50, 0)}, gap_classification='dark_wake_only')
-        record_usage_deltas(self.db_path, "2026-08-07 14:10", day_str, {"AppA": (25, 0)}, gap_classification='sleep_then_full_wake')
-        record_usage_deltas(self.db_path, "2026-08-07 14:15", day_str, {"AppB": (300, 0)}, gap_classification=None)
+        day_str = datetime.date.today().isoformat()
+        record_usage_deltas(self.db_path, f"{day_str} 14:00", day_str, {"AppA": (100, 0)}, gap_classification=None)
+        record_usage_deltas(self.db_path, f"{day_str} 14:05", day_str, {"AppA": (50, 0)}, gap_classification='dark_wake_only')
+        record_usage_deltas(self.db_path, f"{day_str} 14:10", day_str, {"AppA": (25, 0)}, gap_classification='sleep_then_full_wake')
+        record_usage_deltas(self.db_path, f"{day_str} 14:15", day_str, {"AppB": (300, 0)}, gap_classification=None)
 
         # Unfiltered aggregates
         un_hour = query_usage_by_hour(self.db_path, days=30)
@@ -330,10 +332,10 @@ class TestDatabaseAndDeltas(unittest.TestCase):
         self.assertEqual(un_map_day, sums_day)
 
     def test_unknown_gap_counts_as_awake(self):
-        day_str = "2026-08-07"
+        day_str = datetime.date.today().isoformat()
         # One explicit awake row and one unknown_gap row in same hour
-        record_usage_deltas(self.db_path, "2026-08-07 14:00", day_str, {"AppX": (100, 0)}, gap_classification=None)
-        record_usage_deltas(self.db_path, "2026-08-07 14:05", day_str, {"AppX": (999, 0)}, gap_classification='unknown_gap')
+        record_usage_deltas(self.db_path, f"{day_str} 14:00", day_str, {"AppX": (100, 0)}, gap_classification=None)
+        record_usage_deltas(self.db_path, f"{day_str} 14:05", day_str, {"AppX": (999, 0)}, gap_classification='unknown_gap')
 
         un_hour = query_usage_by_hour(self.db_path, days=30)
         layers_hour = {
@@ -357,12 +359,12 @@ class TestDatabaseAndDeltas(unittest.TestCase):
 
     def test_other_apps_series_uniform_across_layers(self):
         # Create 8 big apps in awake, and a small 9th app only in dark_wake_only
-        day_str = "2026-08-07"
+        day_str = datetime.date.today().isoformat()
         big_apps = [f"App{i}" for i in range(1,9)]
         for a in big_apps:
-            record_usage_deltas(self.db_path, "2026-08-07 14:00", day_str, {a: (10000, 0)}, gap_classification=None)
+            record_usage_deltas(self.db_path, f"{day_str} 14:00", day_str, {a: (10000, 0)}, gap_classification=None)
         # small app only in dark_wake_only
-        record_usage_deltas(self.db_path, "2026-08-07 14:00", day_str, {"SmallApp": (50, 0)}, gap_classification='dark_wake_only')
+        record_usage_deltas(self.db_path, f"{day_str} 14:00", day_str, {"SmallApp": (50, 0)}, gap_classification='dark_wake_only')
 
         out_html = os.path.join(self.temp_dir.name, "dashboard_other.html")
         path = generate_html_report(self.db_path, days=30, output_path=out_html)
@@ -386,9 +388,9 @@ class TestDatabaseAndDeltas(unittest.TestCase):
 
     def test_exclude_classification_affects_layers(self):
         # Awake app and a sleep_then_full_wake app; exclude sleep_then_full_wake and ensure layer zeros
-        day_str = "2026-08-07"
-        record_usage_deltas(self.db_path, "2026-08-07 14:00", day_str, {"KeepApp": (1000, 0)}, gap_classification=None)
-        record_usage_deltas(self.db_path, "2026-08-07 14:00", day_str, {"DropApp": (777, 0)}, gap_classification='sleep_then_full_wake')
+        day_str = datetime.date.today().isoformat()
+        record_usage_deltas(self.db_path, f"{day_str} 14:00", day_str, {"KeepApp": (1000, 0)}, gap_classification=None)
+        record_usage_deltas(self.db_path, f"{day_str} 14:00", day_str, {"DropApp": (777, 0)}, gap_classification='sleep_then_full_wake')
 
         out_html = os.path.join(self.temp_dir.name, "dashboard_exclude.html")
         path = generate_html_report(self.db_path, days=30, output_path=out_html, exclude_classifications=['sleep_then_full_wake'])
