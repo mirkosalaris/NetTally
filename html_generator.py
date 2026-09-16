@@ -816,8 +816,6 @@ def generate_html_report(db_path: str, days: Optional[int] = None, output_path: 
         days = cfg["default_report_days"]
 
     totals = query_usage_totals(db_path, days=days, exclude_classifications=exclude_classifications)
-    daily_records = query_usage_by_day(db_path, days=days, exclude_classifications=exclude_classifications)
-    hourly_records = query_usage_by_hour(db_path, days=days, exclude_classifications=exclude_classifications)
     records_5m = query_usage_by_5m(db_path, days=days, exclude_classifications=exclude_classifications)
 
     grand_in = sum(r["total_bytes_in"] or 0 for r in totals)
