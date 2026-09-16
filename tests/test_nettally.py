@@ -22,8 +22,25 @@ from html_generator import generate_html_report
 from config import load_config, DEFAULTS
 import datetime
 from unittest.mock import patch, MagicMock
-from collector import detect_and_classify_gap, check_dark_wake_still_active
+from collector import detect_and_classify_gap, check_dark_wake_still_active, parse_nettop_proc_id
 import json
+
+class TestNettopProcIdParsing(unittest.TestCase):
+    def test_numeric_pid_suffix(self):
+        self.assertEqual(parse_nettop_proc_id("Google Chrome H.1535"), (1535, "Google Chrome H"))
+        self.assertEqual(parse_nettop_proc_id("configd.557"), (557, "configd"))
+
+    def test_non_numeric_suffix_is_deterministic(self):
+        pid1, name1 = parse_nettop_proc_id("SomeHelper.Foo")
+        pid2, name2 = parse_nettop_proc_id("SomeHelper.Foo")
+        self.assertEqual((pid1, name1), (pid2, name2))
+        self.assertEqual(name1, "SomeHelper.Foo")
+
+    def test_no_dot_is_deterministic(self):
+        pid1, name1 = parse_nettop_proc_id("NoDotProcess")
+        pid2, name2 = parse_nettop_proc_id("NoDotProcess")
+        self.assertEqual((pid1, name1), (pid2, name2))
+        self.assertEqual(name1, "NoDotProcess")
 
 class TestGapClassification(unittest.TestCase):
     def setUp(self):

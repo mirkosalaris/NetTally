@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 import signal
+import zlib
 from typing import Dict, Tuple, List, Optional
 
 from app_folder import fold_app_name
@@ -29,6 +30,22 @@ def signal_handler(signum, frame):
     global RUNNING
     print(f"\nReceived signal {signum}, shutting down collector gracefully...")
     RUNNING = False
+
+def _stable_proc_id(proc_id_str: str) -> int:
+    return zlib.crc32(proc_id_str.encode("utf-8"))
+
+def parse_nettop_proc_id(proc_id_str: str) -> Tuple[int, str]:
+    """
+    Splits a nettop process identifier such as "Google Chrome H.1535" or
+    "configd.557" into a (pid, raw_name) tuple. When no numeric PID suffix is
+    present, a deterministic hash of the full identifier is used so the key stays
+    stable across collector restarts.
+    """
+    if "." in proc_id_str:
+        raw_name, pid_str = proc_id_str.rsplit(".", 1)
+        if pid_str.isdigit():
+            return int(pid_str), raw_name
+    return _stable_proc_id(proc_id_str), proc_id_str
 
 def fetch_nettop_sample() -> List[Tuple[int, str, int, int]]:
     """
@@ -70,15 +87,8 @@ def fetch_nettop_sample() -> List[Tuple[int, str, int, int]]:
             continue
 
         # Parse PID and process name from e.g. "Google Chrome H.1535" or "configd.557"
-        if "." in proc_id_str:
-            raw_name, pid_str = proc_id_str.rsplit(".", 1)
-            if pid_str.isdigit():
-                pid = int(pid_str)
-                samples.append((pid, raw_name, bytes_in, bytes_out))
-            else:
-                samples.append((hash(proc_id_str) & 0x7fffffff, proc_id_str, bytes_in, bytes_out))
-        else:
-            samples.append((hash(proc_id_str) & 0x7fffffff, proc_id_str, bytes_in, bytes_out))
+        pid, raw_name = parse_nettop_proc_id(proc_id_str)
+        samples.append((pid, raw_name, bytes_in, bytes_out))
 
     return samples
 
