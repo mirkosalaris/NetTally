@@ -556,11 +556,6 @@
                         let cmpLabel = label;
                         let cmpStart = startVal.replace('T', ' ');
                         let cmpEnd   = endVal.replace('T', ' ');
-                        if (currentGranularity === 'daily') {
-                            cmpLabel = label.substring(0, 10);
-                            cmpStart = cmpStart.substring(0, 10);
-                            cmpEnd   = cmpEnd.substring(0, 10);
-                        }
                         dateOk = cmpLabel >= cmpStart && cmpLabel <= cmpEnd;
                     }
 
