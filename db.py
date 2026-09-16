@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import sys
 import time
 from typing import Dict, List, Tuple, Optional
 
@@ -69,8 +70,8 @@ def init_db(db_path: str) -> None:
             columns = [row["name"] for row in cursor.fetchall()]
             if "gap_classification" not in columns:
                 conn.execute("ALTER TABLE usage_5m ADD COLUMN gap_classification TEXT;")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Warning: Failed to apply gap_classification schema migration: {e}", file=sys.stderr)
     conn.close()
 
 def load_process_states(db_path: str) -> Dict[Tuple[int, str], Tuple[int, int, float]]:

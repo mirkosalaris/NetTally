@@ -2,6 +2,8 @@ import os
 import sys
 import tempfile
 import unittest
+import io
+import contextlib
 
 # Add parent dir to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -152,6 +154,15 @@ class TestConfig(unittest.TestCase):
         cfg = load_config(malformed_path)
         # Should gracefully fallback to defaults
         self.assertEqual(cfg, DEFAULTS)
+
+    def test_malformed_json_warns_on_stderr(self):
+        malformed_path = os.path.join(self.temp_dir.name, "malformed_config.json")
+        with open(malformed_path, "w", encoding="utf-8") as f:
+            f.write("{invalid json: //, }")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            load_config(malformed_path)
+        self.assertIn("Warning", err.getvalue())
 
     def test_partial_file(self):
         partial_path = os.path.join(self.temp_dir.name, "partial_config.json")

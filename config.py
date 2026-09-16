@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import sys
 from typing import Optional, Dict, Any
 
 DEFAULT_CONFIG_PATH = os.path.expanduser("~/Library/Application Support/NetTally/config.json")
@@ -61,7 +62,8 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
                     # Keep unknown keys for forward-compatibility
                     config[key] = val
     except Exception as e:
-        # On error (missing, corrupt, malformed), just fall back to defaults or whatever was parsed
-        pass
+        # On error (missing, corrupt, malformed), fall back to defaults or whatever
+        # was parsed, but say so — a silent default is how config typos go unnoticed.
+        print(f"Warning: Failed to load config from {config_path}: {e}", file=sys.stderr)
 
     return config
