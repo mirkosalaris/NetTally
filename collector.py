@@ -214,11 +214,8 @@ def detect_and_classify_gap(db_path: str, t0: float, t1: float) -> str:
         if last_sleep_idx != -1:
             subsequent = events[last_sleep_idx+1:]
             has_wake = any(et == 'Wake' for (_, et, _) in subsequent)
-            has_darkwake = any(et == 'DarkWake' for (_, et, _) in subsequent)
             if has_wake:
                 classification = 'sleep_then_full_wake'
-            elif has_darkwake:
-                classification = 'dark_wake_only'
             else:
                 classification = 'dark_wake_only'
         else:
