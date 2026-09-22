@@ -11,7 +11,9 @@ rather than silently reversing it.
 NetTally is a solo/hobby, local-only macOS tool that polls `nettop` every 30s, buckets
 per-app byte deltas into 5-minute SQLite rows, and reports/visualizes usage by 5-min/hour/day.
 It also classifies gaps caused by sleep/dark-wake so "a huge byte spike right after wake" isn't
-misread as one instant of real traffic. No cloud, no telemetry, single user, single machine.
+misread as one instant of real traffic. The data pipeline is entirely on-device: usage data
+lives in a local SQLite database, is never uploaded, and there is no telemetry. The source code
+itself is version-controlled and hosted on GitHub (origin), and commits are pushed there.
 
 ## Critical gotcha: there are TWO live copies of the Python files
 
