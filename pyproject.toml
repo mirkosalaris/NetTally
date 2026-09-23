@@ -9,6 +9,8 @@ line-length = 100
 # I: isort (import ordering); UP: pyupgrade (modernize, py39-aware)
 # B: flake8-bugbear (bug-prone patterns); RUF: ruff-specific checks
 select = ["E", "W", "F", "I", "UP", "B", "RUF"]
+# E501 (line too long) is off because `ruff format` already enforces the line-length.
+ignore = ["E501"]
 
 [tool.mypy]
 # Keep aligned with the oldest Python the code runs under (see ruff target-version above).

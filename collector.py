@@ -2,26 +2,25 @@
 import argparse
 import datetime
 import re
+import signal
 import subprocess
 import sys
 import time
-import signal
 import zlib
-from typing import Dict, Tuple, List, Optional
+from typing import Optional
 
 from app_folder import fold_app_name
+from config import load_config
 from db import (
     get_db_path,
     init_db,
     load_process_states,
-    update_process_states,
     prune_stale_process_states,
-    record_usage_deltas,
-    record_power_events,
     record_gap,
+    record_power_events,
+    record_usage_deltas,
+    update_process_states,
 )
-
-from config import load_config
 
 RUNNING = True
 
@@ -36,7 +35,7 @@ def _stable_proc_id(proc_id_str: str) -> int:
     return zlib.crc32(proc_id_str.encode("utf-8"))
 
 
-def parse_nettop_proc_id(proc_id_str: str) -> Tuple[int, str]:
+def parse_nettop_proc_id(proc_id_str: str) -> tuple[int, str]:
     """
     Splits a nettop process identifier such as "Google Chrome H.1535" or
     "configd.557" into a (pid, raw_name) tuple. When no numeric PID suffix is
@@ -50,16 +49,14 @@ def parse_nettop_proc_id(proc_id_str: str) -> Tuple[int, str]:
     return _stable_proc_id(proc_id_str), proc_id_str
 
 
-def fetch_nettop_sample() -> List[Tuple[int, str, int, int]]:
+def fetch_nettop_sample() -> list[tuple[int, str, int, int]]:
     """
     Executes nettop -P -L 1 -x -J bytes_in,bytes_out and parses CSV lines.
     Returns a list of tuples: (pid, raw_process_name, bytes_in, bytes_out)
     """
     cmd = ["nettop", "-P", "-L", "1", "-x", "-J", "bytes_in,bytes_out"]
     try:
-        res = subprocess.run(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True, timeout=10
-        )
+        res = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=10)
     except Exception as e:
         print(f"Error running nettop: {e}", file=sys.stderr)
         return []
@@ -100,10 +97,10 @@ def fetch_nettop_sample() -> List[Tuple[int, str, int, int]]:
 
 def poll_once(
     db_path: str,
-    process_states: Dict[Tuple[int, str], Tuple[int, int, float]],
+    process_states: dict[tuple[int, str], tuple[int, int, float]],
     config_path: Optional[str] = None,
     gap_classification: Optional[str] = None,
-) -> Tuple[int, int]:
+) -> tuple[int, int]:
     """
     Performs a single polling cycle:
     1. Fetches nettop sample
@@ -124,8 +121,8 @@ def poll_once(
     if not samples:
         return (0, 0)
 
-    app_deltas: Dict[str, List[int]] = {}
-    updated_states: Dict[Tuple[int, str], Tuple[int, int, float]] = {}
+    app_deltas: dict[str, list[int]] = {}
+    updated_states: dict[tuple[int, str], tuple[int, int, float]] = {}
 
     total_delta_in = 0
     total_delta_out = 0
@@ -184,7 +181,7 @@ POWER_EVENT_PATTERN = re.compile(
 
 def fetch_pmset_events(
     t0: float, t1: float, margin: float = 60.0, tail_lines: Optional[int] = None
-) -> List[Tuple[float, str, str]]:
+) -> list[tuple[float, str, str]]:
     """
     Runs `pmset -g log`, parses Sleep/Wake/DarkWake lines, and returns the ones whose
     timestamp falls within [t0 - margin, t1 + margin] as (epoch, event_type, reason) tuples.
@@ -202,16 +199,14 @@ def fetch_pmset_events(
             res = subprocess.run(
                 f"pmset -g log | tail -n {tail_lines}",
                 shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 text=True,
                 timeout=10,
             )
         else:
             res = subprocess.run(
                 ["pmset", "-g", "log"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 text=True,
                 check=True,
                 timeout=10,

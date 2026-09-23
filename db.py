@@ -2,7 +2,7 @@ import os
 import sqlite3
 import sys
 import time
-from typing import Dict, List, Tuple, Optional
+from typing import Optional
 
 from config import load_config
 
@@ -83,7 +83,7 @@ def init_db(db_path: str) -> None:
     conn.close()
 
 
-def load_process_states(db_path: str) -> Dict[Tuple[int, str], Tuple[int, int, float]]:
+def load_process_states(db_path: str) -> dict[tuple[int, str], tuple[int, int, float]]:
     conn = get_connection(db_path)
     states = {}
     try:
@@ -102,7 +102,7 @@ def load_process_states(db_path: str) -> Dict[Tuple[int, str], Tuple[int, int, f
 
 
 def update_process_states(
-    db_path: str, states: Dict[Tuple[int, str], Tuple[int, int, float]]
+    db_path: str, states: dict[tuple[int, str], tuple[int, int, float]]
 ) -> None:
     conn = get_connection(db_path)
     with conn:
@@ -138,7 +138,7 @@ def record_usage_deltas(
     db_path: str,
     timestamp_5m: str,
     day_str: str,
-    deltas: Dict[str, Tuple[int, int]],
+    deltas: dict[str, tuple[int, int]],
     is_poll: bool = True,
     gap_classification: Optional[str] = None,
 ) -> None:
@@ -172,7 +172,7 @@ def record_usage_deltas(
     conn.close()
 
 
-def record_power_events(db_path: str, events: List[Tuple[float, str, str]]) -> None:
+def record_power_events(db_path: str, events: list[tuple[float, str, str]]) -> None:
     if not events:
         return
     conn = get_connection(db_path)
@@ -204,8 +204,8 @@ def query_usage_totals(
     db_path: str,
     days: Optional[int] = None,
     app_filter: Optional[str] = None,
-    exclude_classifications: Optional[List[str]] = None,
-) -> List[Dict]:
+    exclude_classifications: Optional[list[str]] = None,
+) -> list[dict]:
     conn = get_connection(db_path)
     try:
         sql = """
@@ -252,9 +252,9 @@ def query_usage_by_day(
     db_path: str,
     days: Optional[int] = None,
     app_filter: Optional[str] = None,
-    exclude_classifications: Optional[List[str]] = None,
+    exclude_classifications: Optional[list[str]] = None,
     only_classification: Optional[str] = None,
-) -> List[Dict]:
+) -> list[dict]:
     conn = get_connection(db_path)
     try:
         sql = """
@@ -313,9 +313,9 @@ def query_usage_by_hour(
     db_path: str,
     days: Optional[int] = None,
     app_filter: Optional[str] = None,
-    exclude_classifications: Optional[List[str]] = None,
+    exclude_classifications: Optional[list[str]] = None,
     only_classification: Optional[str] = None,
-) -> List[Dict]:
+) -> list[dict]:
     conn = get_connection(db_path)
     try:
         sql = """
@@ -375,8 +375,8 @@ def query_usage_by_5m(
     db_path: str,
     days: Optional[int] = None,
     app_filter: Optional[str] = None,
-    exclude_classifications: Optional[List[str]] = None,
-) -> List[Dict]:
+    exclude_classifications: Optional[list[str]] = None,
+) -> list[dict]:
     conn = get_connection(db_path)
     try:
         sql = """

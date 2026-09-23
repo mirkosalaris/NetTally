@@ -3,11 +3,11 @@ import json
 import os
 import re
 import sys
-from typing import Optional, Dict, Any
+from typing import Any, Optional
 
 DEFAULT_CONFIG_PATH = os.path.expanduser("~/Library/Application Support/NetTally/config.json")
 
-DEFAULTS: Dict[str, Any] = {
+DEFAULTS: dict[str, Any] = {
     "polling_interval_seconds": 30,
     "process_state_prune_interval_seconds": 21600,
     "process_state_max_age_seconds": 86400,
@@ -28,7 +28,7 @@ def strip_comments(text: str) -> str:
     return pattern.sub(replacer, text)
 
 
-def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
+def load_config(config_path: Optional[str] = None) -> dict[str, Any]:
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
 
@@ -38,7 +38,7 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
         return config
 
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(config_path, encoding="utf-8") as f:
             raw_content = f.read()
 
         cleaned_content = strip_comments(raw_content)

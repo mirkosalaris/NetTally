@@ -4,17 +4,17 @@ import datetime
 import json
 import os
 import webbrowser
-from typing import Optional, List, Dict
+from typing import Optional
 
+from config import load_config
 from db import (
     get_db_path,
-    query_usage_totals,
+    query_usage_by_5m,
     query_usage_by_day,
     query_usage_by_hour,
-    query_usage_by_5m,
+    query_usage_totals,
 )
 from report import format_bytes
-from config import load_config
 
 DEFAULT_HTML_PATH = os.path.expanduser("~/Library/Application Support/NetTally/dashboard.html")
 
@@ -24,7 +24,7 @@ _TEMPLATE_PATH = os.path.join(
 
 
 def _load_template() -> str:
-    with open(_TEMPLATE_PATH, "r", encoding="utf-8") as f:
+    with open(_TEMPLATE_PATH, encoding="utf-8") as f:
         return f.read()
 
 
@@ -32,14 +32,14 @@ HTML_TEMPLATE = _load_template()
 
 
 def build_view_dataset(
-    records: List[Dict], time_key_name: str, top_apps: List[str], colors: List[str]
-) -> Dict:
+    records: list[dict], time_key_name: str, top_apps: list[str], colors: list[str]
+) -> dict:
     distinct_times = sorted(list(set(r[time_key_name] for r in records)))
 
     # Build per-bucket classification map: use MAX(gap_classification) already computed
     # by the SQL query. All rows for the same timestamp share the same classification,
     # so the first non-None value wins. NULL/None → 'awake'.
-    bucket_cls_map: Dict[str, str] = {}
+    bucket_cls_map: dict[str, str] = {}
     for r in records:
         t = r[time_key_name]
         cls = r.get("gap_classification")
@@ -85,7 +85,7 @@ def generate_html_report(
     db_path: str,
     days: Optional[int] = None,
     output_path: str = DEFAULT_HTML_PATH,
-    exclude_classifications: Optional[List[str]] = None,
+    exclude_classifications: Optional[list[str]] = None,
 ) -> str:
     cfg = load_config()
     if days is None:
@@ -269,7 +269,7 @@ def main():
 
     # Parse --exclude into a list; validate values
     valid_classes = {"dark_wake_only", "sleep_then_full_wake"}
-    exclude_classifications: Optional[List[str]] = None
+    exclude_classifications: Optional[list[str]] = None
     if args.exclude:
         parsed = [c.strip() for c in args.exclude.split(",") if c.strip()]
         invalid = [c for c in parsed if c not in valid_classes]

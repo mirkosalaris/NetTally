@@ -1,31 +1,32 @@
+import contextlib
+import io
 import os
 import sys
 import tempfile
 import unittest
-import io
-import contextlib
 
 # Add parent dir to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import datetime
+import json
+from unittest.mock import MagicMock, patch
+
 from app_folder import AppFolder
+from collector import check_dark_wake_still_active, detect_and_classify_gap, parse_nettop_proc_id
+from config import DEFAULTS, load_config
 from db import (
-    init_db,
     get_connection,
+    init_db,
     load_process_states,
-    update_process_states,
-    record_usage_deltas,
-    query_usage_totals,
+    query_usage_by_5m,
     query_usage_by_day,
     query_usage_by_hour,
-    query_usage_by_5m,
+    query_usage_totals,
+    record_usage_deltas,
+    update_process_states,
 )
 from html_generator import generate_html_report
-from config import load_config, DEFAULTS
-import datetime
-from unittest.mock import patch, MagicMock
-from collector import detect_and_classify_gap, check_dark_wake_still_active, parse_nettop_proc_id
-import json
 
 
 class TestNettopProcIdParsing(unittest.TestCase):
@@ -296,7 +297,7 @@ class TestDatabaseAndDeltas(unittest.TestCase):
         out_html = os.path.join(self.temp_dir.name, "dashboard_empty.html")
         path = generate_html_report(self.db_path, days=30, output_path=out_html)
         self.assertTrue(os.path.exists(path))
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             content = f.read()
             self.assertIn("NetTally", content)
             self.assertIn("No network usage records found", content)
@@ -309,7 +310,7 @@ class TestDatabaseAndDeltas(unittest.TestCase):
         out_html = os.path.join(self.temp_dir.name, "dashboard.html")
         path = generate_html_report(self.db_path, days=30, output_path=out_html)
         self.assertTrue(os.path.exists(path))
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             content = f.read()
             self.assertIn("NetTally", content)
             self.assertIn("5-Min", content)
@@ -372,7 +373,7 @@ class TestDatabaseAndDeltas(unittest.TestCase):
 
         un_map_hour = {key_hour(r): r["total_bytes"] for r in un_hour}
         sums_hour = {}
-        for cls, recs in layers_hour.items():
+        for _cls, recs in layers_hour.items():
             for r in recs:
                 k = key_hour(r)
                 sums_hour[k] = sums_hour.get(k, 0) + r["total_bytes"]
@@ -381,7 +382,7 @@ class TestDatabaseAndDeltas(unittest.TestCase):
 
         un_map_day = {key_day(r): r["total_bytes"] for r in un_day}
         sums_day = {}
-        for cls, recs in layers_day.items():
+        for _cls, recs in layers_day.items():
             for r in recs:
                 k = key_day(r)
                 sums_day[k] = sums_day.get(k, 0) + r["total_bytes"]
@@ -418,7 +419,7 @@ class TestDatabaseAndDeltas(unittest.TestCase):
 
         un_map_hour = {key_hour(r): r["total_bytes"] for r in un_hour}
         sums_hour = {}
-        for cls, recs in layers_hour.items():
+        for _cls, recs in layers_hour.items():
             for r in recs:
                 k = key_hour(r)
                 sums_hour[k] = sums_hour.get(k, 0) + r["total_bytes"]
@@ -445,7 +446,7 @@ class TestDatabaseAndDeltas(unittest.TestCase):
 
         out_html = os.path.join(self.temp_dir.name, "dashboard_other.html")
         path = generate_html_report(self.db_path, days=30, output_path=out_html)
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             content = f.read()
         start = content.find("const viewsData = ")
         self.assertNotEqual(start, -1)
@@ -488,7 +489,7 @@ class TestDatabaseAndDeltas(unittest.TestCase):
             output_path=out_html,
             exclude_classifications=["sleep_then_full_wake"],
         )
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             content = f.read()
         start = content.find("const viewsData = ")
         self.assertNotEqual(start, -1)

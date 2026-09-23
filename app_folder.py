@@ -22,7 +22,7 @@ class AppFolder:
         for path in paths_to_try:
             if os.path.exists(path):
                 try:
-                    with open(path, "r", encoding="utf-8") as f:
+                    with open(path, encoding="utf-8") as f:
                         data = json.load(f)
                         self.exact_map = data.get("exact_map", {})
                         self.prefix_map = data.get("prefix_map", {})

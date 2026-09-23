@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 import argparse
 import json
-from typing import List, Optional
+from typing import Optional
 
 from config import load_config
 from db import (
     get_db_path,
-    query_usage_totals,
+    query_usage_by_5m,
     query_usage_by_day,
     query_usage_by_hour,
-    query_usage_by_5m,
+    query_usage_totals,
 )
 
 
@@ -46,7 +46,7 @@ def _print_report(title, headers, rows, exclude_classifications=None, footer=Non
         print(footer)
 
 
-def _print_table(headers: List[str], rows: List[List[str]]) -> None:
+def _print_table(headers: list[str], rows: list[list[str]]) -> None:
     if not rows:
         print("No usage data found for the specified criteria.")
         return
@@ -72,7 +72,7 @@ def generate_totals_report(
     days: Optional[int],
     app_filter: Optional[str],
     fmt: str,
-    exclude_classifications: Optional[List[str]] = None,
+    exclude_classifications: Optional[list[str]] = None,
 ) -> None:
     results = query_usage_totals(
         db_path, days=days, app_filter=app_filter, exclude_classifications=exclude_classifications
@@ -139,7 +139,7 @@ def generate_by_day_report(
     days: Optional[int],
     app_filter: Optional[str],
     fmt: str,
-    exclude_classifications: Optional[List[str]] = None,
+    exclude_classifications: Optional[list[str]] = None,
 ) -> None:
     results = query_usage_by_day(
         db_path, days=days, app_filter=app_filter, exclude_classifications=exclude_classifications
@@ -175,7 +175,7 @@ def generate_by_hour_report(
     days: Optional[int],
     app_filter: Optional[str],
     fmt: str,
-    exclude_classifications: Optional[List[str]] = None,
+    exclude_classifications: Optional[list[str]] = None,
 ) -> None:
     results = query_usage_by_hour(
         db_path, days=days, app_filter=app_filter, exclude_classifications=exclude_classifications
@@ -213,7 +213,7 @@ def generate_by_5m_report(
     days: Optional[int],
     app_filter: Optional[str],
     fmt: str,
-    exclude_classifications: Optional[List[str]] = None,
+    exclude_classifications: Optional[list[str]] = None,
 ) -> None:
     results = query_usage_by_5m(
         db_path, days=days, app_filter=app_filter, exclude_classifications=exclude_classifications
@@ -298,7 +298,7 @@ def main():
 
     # Parse --exclude into a list; drop unknown/empty tokens
     valid_classes = {"dark_wake_only", "sleep_then_full_wake"}
-    exclude_classifications: Optional[List[str]] = None
+    exclude_classifications: Optional[list[str]] = None
     if args.exclude:
         parsed = [c.strip() for c in args.exclude.split(",") if c.strip()]
         invalid = [c for c in parsed if c not in valid_classes]
