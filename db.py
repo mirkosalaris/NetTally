@@ -5,6 +5,7 @@ classification-aware query API. Hourly/daily rollups are computed on the fly
 from usage_5m; gap_classification is a closed set (NULL / dark_wake_only /
 sleep_then_full_wake / unknown_gap) with unknown_gap folded into awake.
 """
+
 import logging
 import os
 import sqlite3

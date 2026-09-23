@@ -6,6 +6,7 @@ SQLite rows (via db.py), and classifies polling gaps caused by sleep or
 dark-wake using `pmset -g log` so post-wake spikes aren't counted as real
 traffic.
 """
+
 import argparse
 import datetime
 import logging

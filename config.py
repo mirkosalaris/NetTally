@@ -5,6 +5,7 @@ owns that parsing (single source of truth, reused by install.sh via main()).
 Loads user config over a built-in defaults dict, validates value types, and
 keeps unknown keys for forward compatibility.
 """
+
 import argparse
 import json
 import logging

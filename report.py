@@ -4,6 +4,7 @@
 Formatting helpers (print_table, format_bytes) are also reused by the HTML
 dashboard generator, so keep them here rather than duplicating them.
 """
+
 import argparse
 import json
 from typing import Optional

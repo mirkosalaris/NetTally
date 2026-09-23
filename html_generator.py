@@ -6,6 +6,7 @@ data, and substitutes it into templates/dashboard_template.html. The template
 holds the embedded CSS/JS, so keep dashboard JS changes there (and re-run
 ./install.sh to redeploy).
 """
+
 import argparse
 import datetime
 import json

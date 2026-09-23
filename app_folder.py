@@ -3,6 +3,7 @@
 Folding rules live in app_map.json (exact/prefix maps and suffix patterns);
 see config load order and the fold() pipeline below.
 """
+
 import json
 import logging
 import os
