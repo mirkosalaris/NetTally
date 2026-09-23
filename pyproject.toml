@@ -1,0 +1,17 @@
+[tool.ruff]
+# Keep in sync with the oldest Python the code runs under:
+# the LaunchAgent and CLI all use the macOS system /usr/bin/python3 (3.9).
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+# E/W: pycodestyle; F: pyflakes (unused imports, undefined names)
+# I: isort (import ordering); UP: pyupgrade (modernize, py39-aware)
+# B: flake8-bugbear (bug-prone patterns); RUF: ruff-specific checks
+select = ["E", "W", "F", "I", "UP", "B", "RUF"]
+
+[tool.mypy]
+# Keep aligned with the oldest Python the code runs under (see ruff target-version above).
+python_version = "3.9"
+# Flags # type: ignore comments that are no longer needed, so they don't rot.
+warn_unused_ignores = true

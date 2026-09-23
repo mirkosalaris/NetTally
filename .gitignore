@@ -16,6 +16,8 @@ env/
 venv/
 ENV/
 .venv/
+.ruff_cache/
+.mypy_cache/
 
 # Local databases and logs
 *.db
