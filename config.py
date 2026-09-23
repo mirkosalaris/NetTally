@@ -16,15 +16,17 @@ DEFAULTS: Dict[str, Any] = {
     "gap_threshold_multiplier": 3,
 }
 
+
 def strip_comments(text: str) -> str:
-    pattern = re.compile(
-        r'("(?:[^"\\]|\\.)*")|(/\*[\s\S]*?\*/)|(//.*)'
-    )
+    pattern = re.compile(r'("(?:[^"\\]|\\.)*")|(/\*[\s\S]*?\*/)|(//.*)')
+
     def replacer(match):
         if match.group(1) is not None:
             return match.group(1)
         return ""
+
     return pattern.sub(replacer, text)
+
 
 def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
     if config_path is None:
@@ -38,10 +40,10 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             raw_content = f.read()
-        
+
         cleaned_content = strip_comments(raw_content)
         user_config = json.loads(cleaned_content)
-        
+
         if isinstance(user_config, dict):
             for key, val in user_config.items():
                 if key in DEFAULTS:
@@ -69,15 +71,24 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
 
     return config
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Print a single value from the NetTally config")
-    parser.add_argument("--get", type=str, required=True, help="Config key to print, e.g. polling_interval_seconds")
-    parser.add_argument("--config", type=str, default=None, help=f"Path to config.json (default: {DEFAULT_CONFIG_PATH})")
+    parser.add_argument(
+        "--get", type=str, required=True, help="Config key to print, e.g. polling_interval_seconds"
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help=f"Path to config.json (default: {DEFAULT_CONFIG_PATH})",
+    )
     args = parser.parse_args()
     try:
         print(load_config(args.config)[args.get])
     except KeyError:
         parser.error(f"Unknown config key: {args.get}")
+
 
 if __name__ == "__main__":
     main()

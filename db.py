@@ -9,6 +9,7 @@ from config import load_config
 DEFAULT_DB_DIR = os.path.expanduser("~/Library/Application Support/NetTally")
 DEFAULT_DB_PATH = os.path.join(DEFAULT_DB_DIR, "usage.db")
 
+
 def get_db_path(custom_path: Optional[str] = None) -> str:
     if custom_path:
         path = os.path.abspath(os.path.expanduser(custom_path))
@@ -17,6 +18,7 @@ def get_db_path(custom_path: Optional[str] = None) -> str:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     return path
 
+
 def get_connection(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, timeout=10.0)
     conn.row_factory = sqlite3.Row
@@ -24,6 +26,7 @@ def get_connection(db_path: str) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=5000;")
     conn.execute("PRAGMA synchronous=NORMAL;")
     return conn
+
 
 def init_db(db_path: str) -> None:
     conn = get_connection(db_path)
@@ -73,39 +76,52 @@ def init_db(db_path: str) -> None:
             if "gap_classification" not in columns:
                 conn.execute("ALTER TABLE usage_5m ADD COLUMN gap_classification TEXT;")
         except Exception as e:
-            print(f"Warning: Failed to apply gap_classification schema migration: {e}", file=sys.stderr)
+            print(
+                f"Warning: Failed to apply gap_classification schema migration: {e}",
+                file=sys.stderr,
+            )
     conn.close()
+
 
 def load_process_states(db_path: str) -> Dict[Tuple[int, str], Tuple[int, int, float]]:
     conn = get_connection(db_path)
     states = {}
     try:
-        cursor = conn.execute("SELECT pid, process_name, last_bytes_in, last_bytes_out, last_seen_epoch FROM process_state")
+        cursor = conn.execute(
+            "SELECT pid, process_name, last_bytes_in, last_bytes_out, last_seen_epoch FROM process_state"
+        )
         for row in cursor.fetchall():
             states[(row["pid"], row["process_name"])] = (
                 row["last_bytes_in"],
                 row["last_bytes_out"],
-                row["last_seen_epoch"]
+                row["last_seen_epoch"],
             )
     finally:
         conn.close()
     return states
 
-def update_process_states(db_path: str, states: Dict[Tuple[int, str], Tuple[int, int, float]]) -> None:
+
+def update_process_states(
+    db_path: str, states: Dict[Tuple[int, str], Tuple[int, int, float]]
+) -> None:
     conn = get_connection(db_path)
     with conn:
-        conn.executemany("""
+        conn.executemany(
+            """
             INSERT INTO process_state (pid, process_name, last_bytes_in, last_bytes_out, last_seen_epoch)
             VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(pid, process_name) DO UPDATE SET
                 last_bytes_in = excluded.last_bytes_in,
                 last_bytes_out = excluded.last_bytes_out,
                 last_seen_epoch = excluded.last_seen_epoch
-        """, [
-            (pid, proc_name, bytes_in, bytes_out, last_seen)
-            for (pid, proc_name), (bytes_in, bytes_out, last_seen) in states.items()
-        ])
+        """,
+            [
+                (pid, proc_name, bytes_in, bytes_out, last_seen)
+                for (pid, proc_name), (bytes_in, bytes_out, last_seen) in states.items()
+            ],
+        )
     conn.close()
+
 
 def prune_stale_process_states(db_path: str, max_age_seconds: Optional[float] = None) -> None:
     if max_age_seconds is None:
@@ -117,12 +133,21 @@ def prune_stale_process_states(db_path: str, max_age_seconds: Optional[float] = 
         conn.execute("DELETE FROM process_state WHERE last_seen_epoch < ?", (cutoff,))
     conn.close()
 
-def record_usage_deltas(db_path: str, timestamp_5m: str, day_str: str, deltas: Dict[str, Tuple[int, int]], is_poll: bool = True, gap_classification: Optional[str] = None) -> None:
+
+def record_usage_deltas(
+    db_path: str,
+    timestamp_5m: str,
+    day_str: str,
+    deltas: Dict[str, Tuple[int, int]],
+    is_poll: bool = True,
+    gap_classification: Optional[str] = None,
+) -> None:
     if not deltas:
         return
     conn = get_connection(db_path)
     with conn:
-        conn.executemany("""
+        conn.executemany(
+            """
             INSERT INTO usage_5m (timestamp_5m, day, app_name, bytes_in, bytes_out, sample_count, gap_classification)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(timestamp_5m, app_name) DO UPDATE SET
@@ -130,33 +155,57 @@ def record_usage_deltas(db_path: str, timestamp_5m: str, day_str: str, deltas: D
                 bytes_out = bytes_out + excluded.bytes_out,
                 sample_count = sample_count + excluded.sample_count,
                 gap_classification = excluded.gap_classification
-        """, [
-            (timestamp_5m, day_str, app_name, din, dout, 1 if is_poll else 0, gap_classification)
-            for app_name, (din, dout) in deltas.items()
-        ])
+        """,
+            [
+                (
+                    timestamp_5m,
+                    day_str,
+                    app_name,
+                    din,
+                    dout,
+                    1 if is_poll else 0,
+                    gap_classification,
+                )
+                for app_name, (din, dout) in deltas.items()
+            ],
+        )
     conn.close()
+
 
 def record_power_events(db_path: str, events: List[Tuple[float, str, str]]) -> None:
     if not events:
         return
     conn = get_connection(db_path)
     with conn:
-        conn.executemany("""
+        conn.executemany(
+            """
             INSERT OR IGNORE INTO power_events (ts_epoch, event_type, reason_raw)
             VALUES (?, ?, ?)
-        """, events)
+        """,
+            events,
+        )
     conn.close()
+
 
 def record_gap(db_path: str, start_epoch: float, end_epoch: float, classification: str) -> None:
     conn = get_connection(db_path)
     with conn:
-        conn.execute("""
+        conn.execute(
+            """
             INSERT OR REPLACE INTO gaps (start_epoch, end_epoch, classification)
             VALUES (?, ?, ?)
-        """, (start_epoch, end_epoch, classification))
+        """,
+            (start_epoch, end_epoch, classification),
+        )
     conn.close()
 
-def query_usage_totals(db_path: str, days: Optional[int] = None, app_filter: Optional[str] = None, exclude_classifications: Optional[List[str]] = None) -> List[Dict]:
+
+def query_usage_totals(
+    db_path: str,
+    days: Optional[int] = None,
+    app_filter: Optional[str] = None,
+    exclude_classifications: Optional[List[str]] = None,
+) -> List[Dict]:
     conn = get_connection(db_path)
     try:
         sql = """
@@ -182,7 +231,9 @@ def query_usage_totals(db_path: str, days: Optional[int] = None, app_filter: Opt
 
         if exclude_classifications:
             placeholders = ",".join("?" * len(exclude_classifications))
-            where_clauses.append(f"(gap_classification IS NULL OR gap_classification NOT IN ({placeholders}))")
+            where_clauses.append(
+                f"(gap_classification IS NULL OR gap_classification NOT IN ({placeholders}))"
+            )
             params.extend(exclude_classifications)
 
         if where_clauses:
@@ -196,7 +247,14 @@ def query_usage_totals(db_path: str, days: Optional[int] = None, app_filter: Opt
     finally:
         conn.close()
 
-def query_usage_by_day(db_path: str, days: Optional[int] = None, app_filter: Optional[str] = None, exclude_classifications: Optional[List[str]] = None, only_classification: Optional[str] = None) -> List[Dict]:
+
+def query_usage_by_day(
+    db_path: str,
+    days: Optional[int] = None,
+    app_filter: Optional[str] = None,
+    exclude_classifications: Optional[List[str]] = None,
+    only_classification: Optional[str] = None,
+) -> List[Dict]:
     conn = get_connection(db_path)
     try:
         sql = """
@@ -222,15 +280,19 @@ def query_usage_by_day(db_path: str, days: Optional[int] = None, app_filter: Opt
         # Exclude-list behavior
         if exclude_classifications:
             placeholders = ",".join("?" * len(exclude_classifications))
-            where_clauses.append(f"(gap_classification IS NULL OR gap_classification NOT IN ({placeholders}))")
+            where_clauses.append(
+                f"(gap_classification IS NULL OR gap_classification NOT IN ({placeholders}))"
+            )
             params.extend(exclude_classifications)
 
         # Exact-match classification filter (optional). If provided, it takes precedence
         # over exclude_classifications for clarity when callers opt-in.
         if only_classification is not None:
-            if only_classification == 'awake':
+            if only_classification == "awake":
                 # Treat explicit 'unknown_gap' as awake so it is included in awake-layer queries
-                where_clauses.append("(gap_classification IS NULL OR gap_classification = 'unknown_gap')")
+                where_clauses.append(
+                    "(gap_classification IS NULL OR gap_classification = 'unknown_gap')"
+                )
             else:
                 where_clauses.append("gap_classification = ?")
                 params.append(only_classification)
@@ -246,7 +308,14 @@ def query_usage_by_day(db_path: str, days: Optional[int] = None, app_filter: Opt
     finally:
         conn.close()
 
-def query_usage_by_hour(db_path: str, days: Optional[int] = None, app_filter: Optional[str] = None, exclude_classifications: Optional[List[str]] = None, only_classification: Optional[str] = None) -> List[Dict]:
+
+def query_usage_by_hour(
+    db_path: str,
+    days: Optional[int] = None,
+    app_filter: Optional[str] = None,
+    exclude_classifications: Optional[List[str]] = None,
+    only_classification: Optional[str] = None,
+) -> List[Dict]:
     conn = get_connection(db_path)
     try:
         sql = """
@@ -273,15 +342,19 @@ def query_usage_by_hour(db_path: str, days: Optional[int] = None, app_filter: Op
         # Exclude-list behavior
         if exclude_classifications:
             placeholders = ",".join("?" * len(exclude_classifications))
-            where_clauses.append(f"(gap_classification IS NULL OR gap_classification NOT IN ({placeholders}))")
+            where_clauses.append(
+                f"(gap_classification IS NULL OR gap_classification NOT IN ({placeholders}))"
+            )
             params.extend(exclude_classifications)
 
         # Exact-match classification filter (optional). If provided, it takes precedence
         # over exclude_classifications for clarity when callers opt-in.
         if only_classification is not None:
-            if only_classification == 'awake':
+            if only_classification == "awake":
                 # Treat explicit 'unknown_gap' as awake so it is included in awake-layer queries
-                where_clauses.append("(gap_classification IS NULL OR gap_classification = 'unknown_gap')")
+                where_clauses.append(
+                    "(gap_classification IS NULL OR gap_classification = 'unknown_gap')"
+                )
             else:
                 where_clauses.append("gap_classification = ?")
                 params.append(only_classification)
@@ -297,7 +370,13 @@ def query_usage_by_hour(db_path: str, days: Optional[int] = None, app_filter: Op
     finally:
         conn.close()
 
-def query_usage_by_5m(db_path: str, days: Optional[int] = None, app_filter: Optional[str] = None, exclude_classifications: Optional[List[str]] = None) -> List[Dict]:
+
+def query_usage_by_5m(
+    db_path: str,
+    days: Optional[int] = None,
+    app_filter: Optional[str] = None,
+    exclude_classifications: Optional[List[str]] = None,
+) -> List[Dict]:
     conn = get_connection(db_path)
     try:
         sql = """
@@ -322,7 +401,9 @@ def query_usage_by_5m(db_path: str, days: Optional[int] = None, app_filter: Opti
 
         if exclude_classifications:
             placeholders = ",".join("?" * len(exclude_classifications))
-            where_clauses.append(f"(gap_classification IS NULL OR gap_classification NOT IN ({placeholders}))")
+            where_clauses.append(
+                f"(gap_classification IS NULL OR gap_classification NOT IN ({placeholders}))"
+            )
             params.extend(exclude_classifications)
 
         if where_clauses:
