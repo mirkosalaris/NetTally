@@ -13,6 +13,7 @@ A lightweight, local-only background daemon and CLI utility for macOS that recor
 - **Indefinite Retention**: Stores transfer history in a local SQLite database (`~/Library/Application Support/NetTally/usage.db`).
 - **No Sudo Required**: Uses macOS `nettop` in non-elevated user mode and runs seamlessly as a background `LaunchAgent`.
 - **Smart Process Folding**: Groups helper processes (e.g., `Google Chrome Helper`, `Claude Helper`, `Code Helper`) into clean app names using configurable rules in `app_map.json`.
+- **Sleep/Dark-Wake Classification**: Retroactively classifies polling gaps caused by sleep or dark-wake via `pmset` logs, so post-wake byte spikes aren't misread as a single instant of real traffic, and labels 5-minute buckets accordingly.
 - **CLI & Interactive HTML Reports**: Query history via terminal tables, CSV, JSON, or launch a multi-resolution interactive HTML chart dashboard.
 
 ---
@@ -130,7 +131,7 @@ Opens a browser with a Chart.js dashboard featuring three granularity views:
 
 ```
 ~/Library/Application Support/NetTally/
-  ├── usage.db          # SQLite DB with usage_5m and process_state tables
+  ├── usage.db          # SQLite DB with usage_5m, process_state, power_events, and gaps tables
   ├── app_map.json      # Process canonicalization & folding configuration
   ├── config.json       # Polling / reporting configuration
   ├── python_path       # Python interpreter pinned at install time
@@ -158,9 +159,40 @@ CREATE TABLE usage_5m (
     bytes_in     INTEGER NOT NULL DEFAULT 0,
     bytes_out    INTEGER NOT NULL DEFAULT 0,
     sample_count INTEGER NOT NULL DEFAULT 0,
+    gap_classification TEXT,      -- NULL (awake) | 'dark_wake_only' | 'sleep_then_full_wake' | 'unknown_gap'
     PRIMARY KEY (timestamp_5m, app_name)
 );
+
+CREATE TABLE process_state (
+    pid          INTEGER NOT NULL,
+    name         TEXT NOT NULL,
+    bytes_in     INTEGER NOT NULL,
+    bytes_out    INTEGER NOT NULL,
+    last_seen    REAL NOT NULL,   -- epoch seconds of the last poll
+    PRIMARY KEY (pid, name)
+);
+
+CREATE TABLE power_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    epoch      REAL NOT NULL,     -- event timestamp, epoch seconds
+    event_type TEXT NOT NULL,     -- 'Sleep' | 'Wake' | 'DarkWake'
+    reason     TEXT,
+    UNIQUE (epoch, event_type, reason)
+);
+
+CREATE TABLE gaps (
+    start_epoch    REAL NOT NULL,
+    end_epoch      REAL NOT NULL,
+    classification TEXT NOT NULL,
+    PRIMARY KEY (start_epoch, end_epoch)
+);
 ```
+
+`gap_classification` is a closed set: `NULL` means the bucket reflects ordinary awake
+traffic; `'dark_wake_only'`, `'sleep_then_full_wake'`, and `'unknown_gap'` mark buckets
+written by the poll immediately after a sleep/dark-wake gap. Reports can filter those
+classes out with `--exclude`; `'unknown_gap'` is counted as awake everywhere it's
+aggregated.
 
 ### How Data Collection Works
 
@@ -169,15 +201,29 @@ CREATE TABLE usage_5m (
 3. **App Folding**: Maps raw process identifiers (e.g. `Google Chrome H.1535`) to canonical app names via `app_map.json`.
 4. **5-Minute Upsert**: Accumulates deltas via UPSERT into the current 5-minute bucket in `usage_5m`.
 5. **Rollups**: Hourly and daily aggregations are computed on-the-fly at query time via SQL.
+6. **Gap Classification**: If a poll arrives late (sleep/dark-wake), the collector parses
+   `pmset -g log` for Sleep/Wake/DarkWake events spanning the gap, records them, stores a
+   verdict in the `gaps` table, and tags the post-gap 5-minute bucket with that
+   classification so reports can exclude it.
 
 ---
 
 ## Testing
 
-Run unit tests to verify app folding, SQLite persistence, and day-boundary handling:
+Run unit tests to verify gap classification, app folding, SQLite persistence, and
+day-boundary handling:
 
 ```bash
-python3 -m unittest discover tests
+python3 -m unittest discover -s tests
+```
+
+or via the Makefile:
+
+```bash
+make test      # unit tests
+make lint      # ruff (checks + formatting)
+make typecheck # mypy
+make format    # ruff format
 ```
 
 ---
