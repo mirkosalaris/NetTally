@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import datetime
+import logging
 import re
 import signal
 import subprocess
@@ -22,12 +23,14 @@ from db import (
     update_process_states,
 )
 
+logger = logging.getLogger(__name__)
+
 RUNNING = True
 
 
 def signal_handler(signum, frame):
     global RUNNING
-    print(f"\nReceived signal {signum}, shutting down collector gracefully...")
+    logger.info("Received signal %s, shutting down collector gracefully...", signum)
     RUNNING = False
 
 
@@ -58,7 +61,7 @@ def fetch_nettop_sample() -> list[tuple[int, str, int, int]]:
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=10)
     except Exception as e:
-        print(f"Error running nettop: {e}", file=sys.stderr)
+        logger.error("Error running nettop: %s", e)
         return []
 
     lines = res.stdout.strip().splitlines()
@@ -224,7 +227,7 @@ def fetch_pmset_events(
                 except Exception:
                     continue
     except Exception as e:
-        print(f"Error running pmset or parsing: {e}", file=sys.stderr)
+        logger.error("Error running pmset or parsing: %s", e)
     return events
 
 
@@ -302,18 +305,25 @@ def main():
 
     # When stdout/stderr are redirected to a log file (LaunchAgent, `>` redirection),
     # Python block-buffers them, so a healthy collector can appear frozen for many
-    # minutes. Make the daemon's logs line-buffered and flushed on newline.
+    # minutes. Make the daemon's log stream line-buffered and flushed on newline, and
+    # route diagnostics through stdlib logging (INFO+ to stderr, which launchd already
+    # redirects to collector.err.log).
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:
             reconfigure(line_buffering=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        stream=sys.stderr,
+    )
 
     db_path = get_db_path(args.db)
     init_db(db_path)
 
-    print(f"[{datetime.datetime.now().isoformat()}] NetTally Collector started.")
-    print(f"Database: {db_path}")
-    print(f"Interval: {args.interval}s")
+    logger.info("NetTally Collector started.")
+    logger.info("Database: %s", db_path)
+    logger.info("Interval: %ds", args.interval)
 
     process_states = load_process_states(db_path)
     last_prune = time.time()
@@ -346,19 +356,17 @@ def main():
                 db_path, process_states, config_path=args.config, gap_classification=gap_class
             )
             if delta_in > 0 or delta_out > 0:
-                print(
-                    f"[{datetime.datetime.now().isoformat()}] Sample recorded: +{delta_in} B in, +{delta_out} B out"
-                )
-        except Exception as e:
-            print(f"Error during polling cycle: {e}", file=sys.stderr)
+                logger.info("Sample recorded: +%d B in, +%d B out", delta_in, delta_out)
+        except Exception:
+            logger.exception("Error during polling cycle")
 
         # Prune stale process state once every prune_interval
         if time.time() - last_prune > cfg["process_state_prune_interval_seconds"]:
             try:
                 prune_stale_process_states(db_path)
                 last_prune = time.time()
-            except Exception as e:
-                print(f"Error pruning process states: {e}", file=sys.stderr)
+            except Exception:
+                logger.exception("Error pruning process states")
 
         # Sleep for remainder of interval
         elapsed = time.time() - start_time
@@ -370,7 +378,7 @@ def main():
             time.sleep(min(step, sleep_time - slept))
             slept += step
 
-    print(f"[{datetime.datetime.now().isoformat()}] Collector exiting cleanly.")
+    logger.info("Collector exiting cleanly.")
 
 
 if __name__ == "__main__":

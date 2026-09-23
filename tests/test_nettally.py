@@ -170,7 +170,7 @@ class TestConfig(unittest.TestCase):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             load_config(malformed_path)
-        self.assertIn("Warning", err.getvalue())
+        self.assertIn("Failed to load config", err.getvalue())
 
     def test_partial_file(self):
         partial_path = os.path.join(self.temp_dir.name, "partial_config.json")

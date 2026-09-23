@@ -1,10 +1,12 @@
+import logging
 import os
 import sqlite3
-import sys
 import time
 from typing import Optional
 
 from config import load_config
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_DB_DIR = os.path.expanduser("~/Library/Application Support/NetTally")
 DEFAULT_DB_PATH = os.path.join(DEFAULT_DB_DIR, "usage.db")
@@ -76,10 +78,7 @@ def init_db(db_path: str) -> None:
             if "gap_classification" not in columns:
                 conn.execute("ALTER TABLE usage_5m ADD COLUMN gap_classification TEXT;")
         except Exception as e:
-            print(
-                f"Warning: Failed to apply gap_classification schema migration: {e}",
-                file=sys.stderr,
-            )
+            logger.warning("Failed to apply gap_classification schema migration: %s", e)
     conn.close()
 
 

@@ -1,6 +1,9 @@
 import json
+import logging
 import os
 import re
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_APP_MAP_PATH = os.path.expanduser("~/Library/Application Support/NetTally/app_map.json")
 LOCAL_APP_MAP_PATH = os.path.join(os.path.dirname(__file__), "app_map.json")
@@ -29,7 +32,7 @@ class AppFolder:
                         self.suffix_patterns = data.get("suffix_patterns", [])
                         return
                 except Exception as e:
-                    print(f"Warning: Failed to load app_map from {path}: {e}")
+                    logger.warning("Failed to load app_map from %s: %s", path, e)
 
     def fold(self, raw_name: str) -> str:
         if not raw_name:
