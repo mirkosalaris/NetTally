@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""CLI text reporting for NetTally: totals, daily, hourly, and 5-minute views.
+
+Formatting helpers (print_table, format_bytes) are also reused by the HTML
+dashboard generator, so keep them here rather than duplicating them.
+"""
 import argparse
 import json
 from typing import Optional
@@ -14,6 +19,7 @@ from db import (
 
 
 def format_bytes(num_bytes: int) -> str:
+    """Format a byte count as a human-readable binary string (KiB/MiB/GiB/TiB)."""
     if num_bytes < 0:
         return "0 B"
     if num_bytes < 1024:
@@ -75,6 +81,7 @@ def generate_totals_report(
     fmt: str,
     exclude_classifications: Optional[list[str]] = None,
 ) -> None:
+    """Emit the per-app totals report (table/csv/json)."""
     results = query_usage_totals(
         db_path, days=days, app_filter=app_filter, exclude_classifications=exclude_classifications
     )
@@ -142,6 +149,7 @@ def generate_by_day_report(
     fmt: str,
     exclude_classifications: Optional[list[str]] = None,
 ) -> None:
+    """Emit the daily breakdown report (table/csv/json)."""
     results = query_usage_by_day(
         db_path, days=days, app_filter=app_filter, exclude_classifications=exclude_classifications
     )
@@ -178,6 +186,7 @@ def generate_by_hour_report(
     fmt: str,
     exclude_classifications: Optional[list[str]] = None,
 ) -> None:
+    """Emit the hourly breakdown report (table/csv/json)."""
     results = query_usage_by_hour(
         db_path, days=days, app_filter=app_filter, exclude_classifications=exclude_classifications
     )
@@ -216,6 +225,7 @@ def generate_by_5m_report(
     fmt: str,
     exclude_classifications: Optional[list[str]] = None,
 ) -> None:
+    """Emit the 5-minute breakdown report (table/csv/json)."""
     results = query_usage_by_5m(
         db_path, days=days, app_filter=app_filter, exclude_classifications=exclude_classifications
     )
@@ -248,6 +258,7 @@ def generate_by_5m_report(
 
 
 def main():
+    """Parse CLI flags and dispatch to the requested report generator."""
     cfg = load_config()
     parser = argparse.ArgumentParser(description="NetTally CLI Viewer")
     parser.add_argument("--db", type=str, default=None, help="Path to SQLite database file")

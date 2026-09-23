@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""Generate the self-contained HTML dashboard for NetTally.
+
+Reads usage from db.py, builds classification-aware 5m/hourly/daily chart
+data, and substitutes it into templates/dashboard_template.html. The template
+holds the embedded CSS/JS, so keep dashboard JS changes there (and re-run
+./install.sh to redeploy).
+"""
 import argparse
 import datetime
 import json
@@ -34,6 +41,7 @@ HTML_TEMPLATE = _load_template()
 def build_view_dataset(
     records: list[dict], time_key_name: str, top_apps: list[str], colors: list[str]
 ) -> dict:
+    """Build the 5m chart dataset (labels, per-app series, bucket classifications)."""
     distinct_times = sorted(list(set(r[time_key_name] for r in records)))
 
     # Build per-bucket classification map: use MAX(gap_classification) already computed
@@ -87,6 +95,7 @@ def generate_html_report(
     output_path: str = DEFAULT_HTML_PATH,
     exclude_classifications: Optional[list[str]] = None,
 ) -> str:
+    """Query usage and render the dashboard HTML to output_path, returning the path."""
     cfg = load_config()
     if days is None:
         days = cfg["default_report_days"]
@@ -245,6 +254,7 @@ def generate_html_report(
 
 
 def main():
+    """Parse CLI flags and write the dashboard HTML file."""
     cfg = load_config()
     parser = argparse.ArgumentParser(description="Generate HTML network usage dashboard")
     parser.add_argument("--db", type=str, default=None, help="Path to SQLite database file")

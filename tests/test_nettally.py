@@ -1,3 +1,5 @@
+"""Unit tests for NetTally: gap classification, config, folding, and DB behavior."""
+
 import contextlib
 import io
 import os

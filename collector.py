@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""Background nettop poller and sleep/dark-wake gap classifier.
+
+Polls nettop on an interval, buckets per-app byte deltas into 5-minute
+SQLite rows (via db.py), and classifies polling gaps caused by sleep or
+dark-wake using `pmset -g log` so post-wake spikes aren't counted as real
+traffic.
+"""
 import argparse
 import datetime
 import logging
@@ -29,6 +36,7 @@ RUNNING = True
 
 
 def signal_handler(signum, frame):
+    """Set the RUNNING flag to False so the main loop stops on SIGINT/SIGTERM."""
     global RUNNING
     logger.info("Received signal %s, shutting down collector gracefully...", signum)
     RUNNING = False
@@ -232,6 +240,11 @@ def fetch_pmset_events(
 
 
 def detect_and_classify_gap(db_path: str, t0: float, t1: float) -> str:
+    """Classify a polling gap into dark_wake_only / sleep_then_full_wake / unknown_gap.
+
+    Parses pmset power events in [t0, t1], records them in power_events, stores
+    the verdict in the gaps table, and returns the classification.
+    """
     events = fetch_pmset_events(t0, t1)
 
     if events:
@@ -287,6 +300,7 @@ def check_dark_wake_still_active(db_path: str, since_epoch: float, now_epoch: fl
 
 
 def main():
+    """Run the collector daemon (or a single poll with --once)."""
     cfg = load_config()
     parser = argparse.ArgumentParser(description="NetTally: Mac Per-App Network Usage Collector")
     parser.add_argument("--db", type=str, default=None, help="Path to SQLite database file")

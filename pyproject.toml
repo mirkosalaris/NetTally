@@ -16,9 +16,15 @@ line-length = 100
 # E/W: pycodestyle; F: pyflakes (unused imports, undefined names)
 # I: isort (import ordering); UP: pyupgrade (modernize, py39-aware)
 # B: flake8-bugbear (bug-prone patterns); RUF: ruff-specific checks
-select = ["E", "W", "F", "I", "UP", "B", "RUF"]
+# D: pydocstyle — only the "missing docstring" checks, not style nits
+#    (D100 module, D102 public method, D103 public function)
+select = ["E", "W", "F", "I", "UP", "B", "RUF", "D100", "D102", "D103"]
 # E501 (line too long) is off because `ruff format` already enforces the line-length.
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test methods are self-explanatory names; don't force docstrings on them.
+"tests/*.py" = ["D101", "D102", "D103"]
 
 [tool.mypy]
 # The code must still run on Python 3.9+, but mypy 2.x no longer supports

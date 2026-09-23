@@ -1,3 +1,10 @@
+"""SQLite persistence for NetTally: schema, writes, and rollup queries.
+
+Owns the usage_5m / process_state / power_events / gaps tables and the
+classification-aware query API. Hourly/daily rollups are computed on the fly
+from usage_5m; gap_classification is a closed set (NULL / dark_wake_only /
+sleep_then_full_wake / unknown_gap) with unknown_gap folded into awake.
+"""
 import logging
 import os
 import sqlite3
@@ -13,6 +20,7 @@ DEFAULT_DB_PATH = os.path.join(DEFAULT_DB_DIR, "usage.db")
 
 
 def get_db_path(custom_path: Optional[str] = None) -> str:
+    """Return the database path, creating its parent directory if missing."""
     if custom_path:
         path = os.path.abspath(os.path.expanduser(custom_path))
     else:
@@ -22,6 +30,7 @@ def get_db_path(custom_path: Optional[str] = None) -> str:
 
 
 def get_connection(db_path: str) -> sqlite3.Connection:
+    """Open a WAL-mode connection with busy-waiting and NORMAL sync pragmas."""
     conn = sqlite3.connect(db_path, timeout=10.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;")
@@ -31,6 +40,7 @@ def get_connection(db_path: str) -> sqlite3.Connection:
 
 
 def init_db(db_path: str) -> None:
+    """Create all tables if missing and apply the gap_classification migration."""
     conn = get_connection(db_path)
     with conn:
         conn.execute("""
@@ -83,6 +93,7 @@ def init_db(db_path: str) -> None:
 
 
 def load_process_states(db_path: str) -> dict[tuple[int, str], tuple[int, int, float]]:
+    """Load the persisted per-process byte baselines as a (pid, name) keyed dict."""
     conn = get_connection(db_path)
     states = {}
     try:
@@ -103,6 +114,7 @@ def load_process_states(db_path: str) -> dict[tuple[int, str], tuple[int, int, f
 def update_process_states(
     db_path: str, states: dict[tuple[int, str], tuple[int, int, float]]
 ) -> None:
+    """Upsert per-process byte counters and last-seen timestamps into process_state."""
     conn = get_connection(db_path)
     with conn:
         conn.executemany(
@@ -123,6 +135,7 @@ def update_process_states(
 
 
 def prune_stale_process_states(db_path: str, max_age_seconds: Optional[float] = None) -> None:
+    """Delete process_state rows not seen within max_age_seconds (config default)."""
     if max_age_seconds is None:
         cfg = load_config()
         max_age_seconds = float(cfg["process_state_max_age_seconds"])
@@ -141,6 +154,12 @@ def record_usage_deltas(
     is_poll: bool = True,
     gap_classification: Optional[str] = None,
 ) -> None:
+    """Accumulate byte deltas into a 5-minute usage_5m bucket via upsert.
+
+    On conflict the gap_classification of the *last poll touching the bucket*
+    wins (last-write-wins); see AGENTS.md and decision 0004 for why this
+    matters.
+    """
     if not deltas:
         return
     conn = get_connection(db_path)
@@ -172,6 +191,7 @@ def record_usage_deltas(
 
 
 def record_power_events(db_path: str, events: list[tuple[float, str, str]]) -> None:
+    """Insert parsed pmset power events, ignoring duplicates."""
     if not events:
         return
     conn = get_connection(db_path)
@@ -187,6 +207,7 @@ def record_power_events(db_path: str, events: list[tuple[float, str, str]]) -> N
 
 
 def record_gap(db_path: str, start_epoch: float, end_epoch: float, classification: str) -> None:
+    """Record a gap verdict keyed by (start_epoch, end_epoch), replacing prior writes."""
     conn = get_connection(db_path)
     with conn:
         conn.execute(
@@ -205,6 +226,7 @@ def query_usage_totals(
     app_filter: Optional[str] = None,
     exclude_classifications: Optional[list[str]] = None,
 ) -> list[dict]:
+    """Aggregate usage per app, optionally windowed by days / app filter / excluded classes."""
     conn = get_connection(db_path)
     try:
         sql = """
@@ -254,6 +276,12 @@ def query_usage_by_day(
     exclude_classifications: Optional[list[str]] = None,
     only_classification: Optional[str] = None,
 ) -> list[dict]:
+    """Aggregate usage per day+app, with classification-aware filtering.
+
+    exclude_classifications drops whole classes; only_classification (when set)
+    keeps exactly one class, with 'awake' folding 'unknown_gap' in. The
+    signature/return shape is a deliberate constraint — see AGENTS.md.
+    """
     conn = get_connection(db_path)
     try:
         sql = """
@@ -315,6 +343,7 @@ def query_usage_by_hour(
     exclude_classifications: Optional[list[str]] = None,
     only_classification: Optional[str] = None,
 ) -> list[dict]:
+    """Aggregate usage per hour+app, with the same classification filters as by_day."""
     conn = get_connection(db_path)
     try:
         sql = """
@@ -376,6 +405,7 @@ def query_usage_by_5m(
     app_filter: Optional[str] = None,
     exclude_classifications: Optional[list[str]] = None,
 ) -> list[dict]:
+    """Aggregate usage per 5-minute bucket+app, with exclude-classification support."""
     conn = get_connection(db_path)
     try:
         sql = """

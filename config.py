@@ -1,3 +1,10 @@
+"""Configuration loading with comment-stripping and type validation.
+
+NetTally's config.json allows JS-style `//` and `/* */` comments; this module
+owns that parsing (single source of truth, reused by install.sh via main()).
+Loads user config over a built-in defaults dict, validates value types, and
+keeps unknown keys for forward compatibility.
+"""
 import argparse
 import json
 import logging
@@ -20,6 +27,7 @@ DEFAULTS: dict[str, Any] = {
 
 
 def strip_comments(text: str) -> str:
+    """Remove `//` and `/* */` comments while preserving quoted strings."""
     pattern = re.compile(r'("(?:[^"\\]|\\.)*")|(/\*[\s\S]*?\*/)|(//.*)')
 
     def replacer(match):
@@ -31,6 +39,11 @@ def strip_comments(text: str) -> str:
 
 
 def load_config(config_path: Optional[str] = None) -> dict[str, Any]:
+    """Load config, merging file values over DEFAULTS with type validation.
+
+    Falls back to defaults on a missing/corrupt/malformed file, logging a
+    warning rather than failing hard so a bad config never stops the daemon.
+    """
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
 
@@ -75,6 +88,7 @@ def load_config(config_path: Optional[str] = None) -> dict[str, Any]:
 
 
 def main() -> None:
+    """Print a single config value (used by install.sh to read the polling interval)."""
     parser = argparse.ArgumentParser(description="Print a single value from the NetTally config")
     parser.add_argument(
         "--get", type=str, required=True, help="Config key to print, e.g. polling_interval_seconds"
