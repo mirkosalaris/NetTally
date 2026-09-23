@@ -13,7 +13,11 @@ select = ["E", "W", "F", "I", "UP", "B", "RUF"]
 ignore = ["E501"]
 
 [tool.mypy]
-# Keep aligned with the oldest Python the code runs under (see ruff target-version above).
-python_version = "3.9"
+# The code must still run on Python 3.9+, but mypy 2.x no longer supports
+# type-checking against a 3.9 target and refuses to run, so the effective
+# floor here is 3.10. Syntax compatibility with the 3.9 runtime is still
+# enforced by ruff's target-version = "py39" above, and the codebase only
+# uses PEP 585 builtin generics, which are valid at runtime on 3.9.
+python_version = "3.10"
 # Flags # type: ignore comments that are no longer needed, so they don't rot.
 warn_unused_ignores = true

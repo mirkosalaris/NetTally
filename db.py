@@ -219,7 +219,7 @@ def query_usage_totals(
             FROM usage_5m
         """
         where_clauses = []
-        params = []
+        params: list[object] = []
 
         if days is not None:
             where_clauses.append("day >= date('now', 'localtime', '-' || ? || ' days')")
@@ -267,7 +267,7 @@ def query_usage_by_day(
             FROM usage_5m
         """
         where_clauses = []
-        params = []
+        params: list[object] = []
 
         if days is not None:
             where_clauses.append("day >= date('now', 'localtime', '-' || ? || ' days')")
@@ -329,7 +329,7 @@ def query_usage_by_hour(
             FROM usage_5m
         """
         where_clauses = []
-        params = []
+        params: list[object] = []
 
         if days is not None:
             where_clauses.append("day >= date('now', 'localtime', '-' || ? || ' days')")
@@ -389,7 +389,7 @@ def query_usage_by_5m(
             FROM usage_5m
         """
         where_clauses = []
-        params = []
+        params: list[object] = []
 
         if days is not None:
             where_clauses.append("day >= date('now', 'localtime', '-' || ? || ' days')")

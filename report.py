@@ -21,8 +21,9 @@ def format_bytes(num_bytes: int) -> str:
     val = float(num_bytes)
     for unit in ["KiB", "MiB", "GiB", "TiB"]:
         val /= 1024.0
-        if val < 1024.0 or unit == "TiB":
+        if val < 1024.0:
             return f"{val:.2f} {unit}"
+    return f"{val:.2f} TiB"
 
 
 def _emit_json_or_csv(results, fmt, csv_header, csv_row):
