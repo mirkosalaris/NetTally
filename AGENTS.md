@@ -60,13 +60,18 @@ report.py / html_generator.py → read usage_5m via db.py's query_usage_by_{5m,h
 
 ## Before you consider a change done
 
-1. Run the tests: `python3 -m unittest discover -s tests` (repo root). All of them, not just
-   the ones near your change — several past bugs here were dashboard JS bugs with zero test
-   coverage until they were found manually; don't assume "tests pass" means "no regression" if
-   you touched `html_generator.py`'s embedded JS.
-2. If you touched `collector.py` / `db.py` / `config.py` / `app_folder.py`: tell the user (or
+1. Run the tests: `python3 -m unittest discover -s tests` (repo root), or `make test`. All of
+   them, not just the ones near your change — several past bugs here were dashboard JS bugs with
+   zero test coverage until they were found manually; don't assume "tests pass" means "no
+   regression" if you touched `html_generator.py`'s embedded JS.
+2. Run `make lint` (ruff) and `make typecheck` (mypy; config in `pyproject.toml`), and run
+   `make format` before you commit so the diff stays annular-format-clean. If your change
+   produces a lint/type finding you're confident is a false positive, say so explicitly instead
+   of silently growing `ignore` lists or adding `# type: ignore` (both are kept minimal
+   deliberately).
+3. If you touched `collector.py` / `db.py` / `config.py` / `app_folder.py`: tell the user (or
    run, if you can) `./install.sh` again — see the gotcha above.
-3. If you touched anything sleep/wake/gap-classification related, verify against real data if
+4. If you touched anything sleep/wake/gap-classification related, verify against real data if
    at all possible (a crafted repro or a real `usage.db` snapshot), not just unit tests with
    mocked `pmset` output. This codebase's nastiest bugs were all "looks right in isolation, but
    the real device log timing broke the assumption."
