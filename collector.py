@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 RUNNING = True
 
 
-def signal_handler(signum, frame):
+def signal_handler(signum: int, frame: object) -> None:
     """Set the RUNNING flag to False so the main loop stops on SIGINT/SIGTERM."""
     global RUNNING
     logger.info("Received signal %s, shutting down collector gracefully...", signum)
@@ -300,7 +300,7 @@ def check_dark_wake_still_active(db_path: str, since_epoch: float, now_epoch: fl
     return classification
 
 
-def main():
+def main() -> None:
     """Run the collector daemon (or a single poll with --once)."""
     cfg = load_config()
     parser = argparse.ArgumentParser(description="NetTally: Mac Per-App Network Usage Collector")
@@ -342,8 +342,8 @@ def main():
 
     process_states = load_process_states(db_path)
     last_prune = time.time()
-    last_poll_epoch = None
-    last_classification = None
+    last_poll_epoch: Optional[float] = None
+    last_classification: Optional[str] = None
 
     if args.once:
         delta_in, delta_out = poll_once(db_path, process_states, config_path=args.config)
@@ -352,7 +352,7 @@ def main():
 
     while RUNNING:
         start_time = time.time()
-        gap_class = None
+        gap_class: Optional[str] = None
 
         if last_poll_epoch is not None:
             time_diff = start_time - last_poll_epoch

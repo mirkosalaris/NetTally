@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -18,13 +19,13 @@ LOCAL_APP_MAP_PATH = os.path.join(os.path.dirname(__file__), "app_map.json")
 class AppFolder:
     """Folds raw nettop process names to app names using configured rules."""
 
-    def __init__(self, config_path=None):
-        self.exact_map = {}
-        self.prefix_map = {}
-        self.suffix_patterns = []
+    def __init__(self, config_path: Optional[str] = None) -> None:
+        self.exact_map: dict[str, str] = {}
+        self.prefix_map: dict[str, str] = {}
+        self.suffix_patterns: list[str] = []
         self.load_config(config_path)
 
-    def load_config(self, config_path=None):
+    def load_config(self, config_path: Optional[str] = None) -> None:
         """Load folding rules from the first available path (explicit > AppSupport > local)."""
         paths_to_try = []
         if config_path:
@@ -82,10 +83,10 @@ class AppFolder:
         return regex_cleaned if regex_cleaned else name
 
 
-_default_folder = None
+_default_folder: Optional[AppFolder] = None
 
 
-def get_app_folder(config_path=None):
+def get_app_folder(config_path: Optional[str] = None) -> AppFolder:
     """Return the process-wide AppFolder singleton, re-created when config_path changes."""
     global _default_folder
     if _default_folder is None or config_path is not None:
@@ -93,7 +94,7 @@ def get_app_folder(config_path=None):
     return _default_folder
 
 
-def fold_app_name(raw_name: str, config_path=None) -> str:
+def fold_app_name(raw_name: str, config_path: Optional[str] = None) -> str:
     """Fold a raw name via the module singleton; see AppFolder.fold()."""
     folder = get_app_folder(config_path)
     return folder.fold(raw_name)

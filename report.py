@@ -7,7 +7,7 @@ dashboard generator, so keep them here rather than duplicating them.
 
 import argparse
 import json
-from typing import Optional
+from typing import Callable, Optional
 
 from config import load_config
 from db import (
@@ -33,7 +33,13 @@ def format_bytes(num_bytes: int) -> str:
     return f"{val:.2f} TiB"
 
 
-def _emit_json_or_csv(results, fmt, csv_header, csv_row):
+def _emit_json_or_csv(
+    results: list[dict],
+    fmt: str,
+    csv_header: str,
+    csv_row: Callable[[dict], str],
+) -> bool:
+    """Print results as JSON or CSV; return True if handled, False to fall through to table."""
     if fmt == "json":
         print(json.dumps(results, indent=2))
         return True
@@ -45,7 +51,14 @@ def _emit_json_or_csv(results, fmt, csv_header, csv_row):
     return False
 
 
-def _print_report(title, headers, rows, exclude_classifications=None, footer=None):
+def _print_report(
+    title: str,
+    headers: list[str],
+    rows: list[list[str]],
+    exclude_classifications: Optional[list[str]] = None,
+    footer: Optional[str] = None,
+) -> None:
+    """Print a titled report with an optional exclusion note and footer line."""
     print(f"\n--- {title} ---")
     if exclude_classifications:
         print(f"[Excluded classifications: {', '.join(exclude_classifications)}]")
@@ -258,7 +271,7 @@ def generate_by_5m_report(
     )
 
 
-def main():
+def main() -> None:
     """Parse CLI flags and dispatch to the requested report generator."""
     cfg = load_config()
     parser = argparse.ArgumentParser(description="NetTally CLI Viewer")

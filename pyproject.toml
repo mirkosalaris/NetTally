@@ -35,3 +35,6 @@ ignore = ["E501"]
 python_version = "3.10"
 # Flags # type: ignore comments that are no longer needed, so they don't rot.
 warn_unused_ignores = true
+# Check inside the bodies of functions whose parameters/return aren't annotated,
+# so gaps in annotation coverage don't silently disable checking for that body.
+check_untyped_defs = true

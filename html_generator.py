@@ -141,7 +141,13 @@ def generate_html_report(
     ]
 
     # Build layered views for hourly/daily: master aligned labels + per-classification layers
-    def align_layer(master_labels, layer_records, time_key_name, force_include_other: bool = False):
+    def align_layer(
+        master_labels: list[str],
+        layer_records: list[dict],
+        time_key_name: str,
+        force_include_other: bool = False,
+    ) -> list[dict]:
+        """Build per-app dataset series pinned to the master label axis for one layer."""
         datasets = []
         for idx, app in enumerate(top_apps):
             color = colors[idx % len(colors)]
@@ -254,7 +260,7 @@ def generate_html_report(
     return output_path
 
 
-def main():
+def main() -> None:
     """Parse CLI flags and write the dashboard HTML file."""
     cfg = load_config()
     parser = argparse.ArgumentParser(description="Generate HTML network usage dashboard")

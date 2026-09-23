@@ -374,7 +374,7 @@ class TestDatabaseAndDeltas(unittest.TestCase):
             return (r["day"], r["app_name"])
 
         un_map_hour = {key_hour(r): r["total_bytes"] for r in un_hour}
-        sums_hour = {}
+        sums_hour: dict[tuple[str, str], int] = {}
         for _cls, recs in layers_hour.items():
             for r in recs:
                 k = key_hour(r)
@@ -383,7 +383,7 @@ class TestDatabaseAndDeltas(unittest.TestCase):
         self.assertEqual(un_map_hour, sums_hour)
 
         un_map_day = {key_day(r): r["total_bytes"] for r in un_day}
-        sums_day = {}
+        sums_day: dict[tuple[str, str], int] = {}
         for _cls, recs in layers_day.items():
             for r in recs:
                 k = key_day(r)
@@ -420,7 +420,7 @@ class TestDatabaseAndDeltas(unittest.TestCase):
             return (r["timestamp_hour"], r["app_name"])
 
         un_map_hour = {key_hour(r): r["total_bytes"] for r in un_hour}
-        sums_hour = {}
+        sums_hour: dict[tuple[str, str], int] = {}
         for _cls, recs in layers_hour.items():
             for r in recs:
                 k = key_hour(r)

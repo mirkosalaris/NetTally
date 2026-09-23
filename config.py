@@ -31,7 +31,7 @@ def strip_comments(text: str) -> str:
     """Remove `//` and `/* */` comments while preserving quoted strings."""
     pattern = re.compile(r'("(?:[^"\\]|\\.)*")|(/\*[\s\S]*?\*/)|(//.*)')
 
-    def replacer(match):
+    def replacer(match: re.Match[str]) -> str:
         if match.group(1) is not None:
             return match.group(1)
         return ""
