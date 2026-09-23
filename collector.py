@@ -300,6 +300,14 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
+    # When stdout/stderr are redirected to a log file (LaunchAgent, `>` redirection),
+    # Python block-buffers them, so a healthy collector can appear frozen for many
+    # minutes. Make the daemon's logs line-buffered and flushed on newline.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(line_buffering=True)
+
     db_path = get_db_path(args.db)
     init_db(db_path)
 
