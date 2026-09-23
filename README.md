@@ -36,9 +36,11 @@ This will:
 1. Copy scripts to `~/Library/Application Support/NetTally/` (a fully standalone runtime).
 2. Generate and load `~/Library/LaunchAgents/com.nettally.daemon.plist`.
 3. Start the background collector daemon (runs automatically on login/reboot).
-4. Symlink `nettally` to `~/.local/bin/nettally` (if available), pointing at the standalone
-   copy — you can delete the source folder after install; `nettally` and the daemon keep
-   working from Application Support.
+4. Symlink `nettally` to `~/.local/bin/nettally`, pointing at the standalone copy, and adds
+   `~/.local/bin` to `$PATH` in your shell profile (`~/.zshrc` for zsh, `~/.bash_profile` for
+   bash) if it isn't already there — open a new terminal afterwards so `nettally` is available.
+   You can delete the source folder after install; `nettally` and the daemon keep working from
+   Application Support.
 
 ### Upgrading / Reconfiguring
 

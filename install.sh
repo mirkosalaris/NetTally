@@ -121,16 +121,44 @@ else
     launchctl load -w "$PLIST_DEST" 2>/dev/null || true
 fi
 
-# 7. Create user bin symlink if a standard path exists.
-#    Points at the deployed wrapper in Application Support, not at a source
-#    folder that the user might delete later.
-for BIN_DIR in "$HOME/.local/bin" "$HOME/bin"; do
-    if [ -d "$BIN_DIR" ]; then
-        ln -sf "$APP_DIR/nettally" "$BIN_DIR/nettally"
-        echo "Symlinked CLI command to $BIN_DIR/nettally (standalone copy in Application Support)"
-        break
-    fi
+# 7. Install the CLI command on PATH. The symlink points at the deployed
+#    wrapper in Application Support, not at a source folder the user might
+#    delete later. Prefer a user bin dir that is already on PATH; otherwise
+#    create the standard ~/.local/bin and add it to the shell profile.
+BIN_DIR=""
+for CANDIDATE in "$HOME/.local/bin" "$HOME/bin"; do
+    case ":$PATH:" in
+        *":$CANDIDATE:"*)
+            BIN_DIR="$CANDIDATE"
+            break
+            ;;
+    esac
 done
+
+if [ -z "$BIN_DIR" ]; then
+    BIN_DIR="$HOME/.local/bin"
+    PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
+    if [ "$(basename "${SHELL:-/bin/zsh}")" = "zsh" ]; then
+        PROFILE="$HOME/.zshrc"
+    else
+        PROFILE="$HOME/.bash_profile"
+    fi
+    [ -f "$PROFILE" ] || touch "$PROFILE"
+    if ! grep -qF "$PATH_LINE" "$PROFILE" 2>/dev/null; then
+        # Marker-guarded so uninstall.sh can remove it cleanly.
+        {
+            echo ""
+            echo "# >>> NetTally CLI PATH >>>"
+            echo "$PATH_LINE"
+            echo "# <<< NetTally CLI PATH <<<"
+        } >> "$PROFILE"
+        echo "Added $BIN_DIR to PATH in $PROFILE (open a new terminal to pick it up)."
+    fi
+fi
+
+mkdir -p "$BIN_DIR"
+ln -sf "$APP_DIR/nettally" "$BIN_DIR/nettally"
+echo "Symlinked CLI command to $BIN_DIR/nettally (standalone copy in Application Support)"
 
 echo ""
 echo "SUCCESS: NetTally installed and running!"

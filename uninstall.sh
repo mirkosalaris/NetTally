@@ -24,6 +24,14 @@ fi
 # 3. Remove symlink
 rm -f "$HOME/.local/bin/nettally" "$HOME/bin/nettally" 2>/dev/null || true
 
+# 3b. Remove the PATH block install.sh added to the shell profile, if present.
+for PROFILE in "$HOME/.zshrc" "$HOME/.bash_profile"; do
+    if [ -f "$PROFILE" ] && grep -qF "# >>> NetTally CLI PATH >>>" "$PROFILE"; then
+        sed -i '' '/# >>> NetTally CLI PATH >>>/,/# <<< NetTally CLI PATH <<</d' "$PROFILE"
+        echo "Removed NetTally PATH entry from $PROFILE"
+    fi
+done
+
 # 4. Cleanup application files & logs (preserve database by default unless --purge is passed)
 if [ "$1" == "--purge" ]; then
     echo "Purging all data, database, and logs..."

@@ -22,7 +22,8 @@ itself is version-controlled and hosted on GitHub (origin), and commits are push
 - Once installed, the `nettally` CLI on your PATH also runs from there: `install.sh` copies
   `collector.py`, `db.py`, `config.py`, `app_folder.py`, `report.py`, `html_generator.py`,
   `templates/`, the `nettally` wrapper, `install.sh`/`uninstall.sh`, and the plist template
-  into Application Support, and symlinks `~/bin/nettally` → `$APP_DIR/nettally`. Deleting the
+  into Application Support, and symlinks `nettally` onto your PATH (into `~/.local/bin`
+  — created and added to `$PATH` in your shell profile if not already there). Deleting the
   source folder after install is fine. (See `docs/decisions/0006-...`; it resolves the open
   question in `0005`.)
 - `./nettally ...` from **this workspace** is the development path: the wrapper resolves paths

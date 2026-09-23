@@ -23,8 +23,9 @@ time:
 - `install.sh` copies everything launchable into Application Support: collector/db/config/
   app_folder/report/html_generator, `templates/` (the dashboard template is resolved relative
   to html_generator), the `nettally` wrapper, `install.sh`/`uninstall.sh`, and the plist
-  template. `~/bin/nettally` symlinks to `$APP_DIR/nettally`; the wrapper resolves symlinks
-  first, so `report`/`html`/`run-once` run the deployed copies. Deleting the source folder
+  template. `install.sh` symlinks `nettally` onto PATH via `~/.local/bin` (created, and added
+  to the shell profile's `$PATH` if needed, when it or `~/bin` is not already on PATH); the
+  wrapper resolves symlinks first, so `report`/`html`/`run-once` run the deployed copies. Deleting the source folder
   afterwards is fine, and `nettally install` from the deployed copy acts as a repair/
   reconfigure command.
 - Python is resolved once, at install time. `install.sh` takes the first `python3` on PATH
