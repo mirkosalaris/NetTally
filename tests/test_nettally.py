@@ -1,6 +1,7 @@
 """Unit tests for NetTally: gap classification, config, folding, and DB behavior."""
 
 import contextlib
+import csv
 import datetime
 import io
 import json
@@ -24,6 +25,7 @@ from db import (
     update_process_states,
 )
 from html_generator import generate_html_report
+from report import generate_totals_report
 
 
 class TestNettopProcIdParsing(unittest.TestCase):
@@ -270,6 +272,33 @@ class TestDatabaseAndDeltas(unittest.TestCase):
         self.assertEqual(chrome_total["total_bytes_in"], 18000)
         self.assertEqual(chrome_total["total_bytes_out"], 3500)
         self.assertEqual(chrome_total["total_samples"], 3)
+
+    def test_csv_totals_round_trip(self):
+        # An app name containing a comma exercises quoting in the csv writer.
+        day_str = datetime.date.today().isoformat()
+        record_usage_deltas(
+            self.db_path, f"{day_str} 14:00", day_str, {"Chrome, Canary": (5000, 1000)}
+        )
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            generate_totals_report(self.db_path, days=None, app_filter=None, fmt="csv")
+
+        rows = list(csv.reader(io.StringIO(out.getvalue())))
+        self.assertEqual(
+            rows[0],
+            [
+                "App Name",
+                "Total Received",
+                "Total Sent",
+                "Total Transfer",
+                "Samples",
+                "Earliest Day",
+                "Latest Day",
+            ],
+        )
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[1], ["Chrome, Canary", "5000", "1000", "6000", "1", day_str, day_str])
 
     def test_day_boundary_isolation(self):
         # Rows on different days must be stored under separate day values

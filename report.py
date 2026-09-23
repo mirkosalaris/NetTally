@@ -6,7 +6,9 @@ dashboard generator, so keep them here rather than duplicating them.
 """
 
 import argparse
+import csv
 import json
+import sys
 from typing import Callable, Optional
 
 from config import load_config
@@ -36,17 +38,18 @@ def format_bytes(num_bytes: int) -> str:
 def _emit_json_or_csv(
     results: list[dict],
     fmt: str,
-    csv_header: str,
-    csv_row: Callable[[dict], str],
+    csv_headers: list[str],
+    csv_row: Callable[[dict], list[str]],
 ) -> bool:
-    """Print results as JSON or CSV; return True if handled, False to fall through to table."""
+    """Print results as JSON or properly-quoted CSV; True if handled, else fall through."""
     if fmt == "json":
         print(json.dumps(results, indent=2))
         return True
     if fmt == "csv":
-        print(csv_header)
+        writer = csv.writer(sys.stdout, lineterminator="\n")
+        writer.writerow(csv_headers)
         for r in results:
-            print(csv_row(r))
+            writer.writerow(csv_row(r))
         return True
     return False
 
@@ -103,10 +106,24 @@ def generate_totals_report(
     if _emit_json_or_csv(
         results,
         fmt,
-        "App Name,Total Received,Total Sent,Total Transfer,Samples,Earliest Day,Latest Day",
-        lambda r: (
-            f'"{r["app_name"]}",{r["total_bytes_in"]},{r["total_bytes_out"]},{r["total_bytes"]},{r["total_samples"]},{r["earliest_day"]},{r["latest_day"]}'
-        ),
+        [
+            "App Name",
+            "Total Received",
+            "Total Sent",
+            "Total Transfer",
+            "Samples",
+            "Earliest Day",
+            "Latest Day",
+        ],
+        lambda r: [
+            str(r["app_name"]),
+            str(r["total_bytes_in"] or 0),
+            str(r["total_bytes_out"] or 0),
+            str(r["total_bytes"] or 0),
+            str(r["total_samples"] or 0),
+            str(r["earliest_day"]),
+            str(r["latest_day"]),
+        ],
     ):
         return
 
@@ -171,10 +188,15 @@ def generate_by_day_report(
     if _emit_json_or_csv(
         results,
         fmt,
-        "Date,App Name,Received,Sent,Total Transfer,Samples",
-        lambda r: (
-            f'{r["day"]},"{r["app_name"]}",{r["bytes_in"]},{r["bytes_out"]},{r["total_bytes"]},{r["sample_count"]}'
-        ),
+        ["Date", "App Name", "Received", "Sent", "Total Transfer", "Samples"],
+        lambda r: [
+            str(r["day"]),
+            str(r["app_name"]),
+            str(r["bytes_in"]),
+            str(r["bytes_out"]),
+            str(r["total_bytes"]),
+            str(r["sample_count"]),
+        ],
     ):
         return
 
@@ -208,10 +230,15 @@ def generate_by_hour_report(
     if _emit_json_or_csv(
         results,
         fmt,
-        "Hour,App Name,Received,Sent,Total Transfer,Samples",
-        lambda r: (
-            f'{r["timestamp_hour"]},"{r["app_name"]}",{r["bytes_in"]},{r["bytes_out"]},{r["total_bytes"]},{r["sample_count"]}'
-        ),
+        ["Hour", "App Name", "Received", "Sent", "Total Transfer", "Samples"],
+        lambda r: [
+            str(r["timestamp_hour"]),
+            str(r["app_name"]),
+            str(r["bytes_in"]),
+            str(r["bytes_out"]),
+            str(r["total_bytes"]),
+            str(r["sample_count"]),
+        ],
     ):
         return
 
@@ -247,10 +274,15 @@ def generate_by_5m_report(
     if _emit_json_or_csv(
         results,
         fmt,
-        "5m Timestamp,App Name,Received,Sent,Total Transfer,Samples",
-        lambda r: (
-            f'{r["timestamp_5m"]},"{r["app_name"]}",{r["bytes_in"]},{r["bytes_out"]},{r["total_bytes"]},{r["sample_count"]}'
-        ),
+        ["5m Timestamp", "App Name", "Received", "Sent", "Total Transfer", "Samples"],
+        lambda r: [
+            str(r["timestamp_5m"]),
+            str(r["app_name"]),
+            str(r["bytes_in"]),
+            str(r["bytes_out"]),
+            str(r["total_bytes"]),
+            str(r["sample_count"]),
+        ],
     ):
         return
 
