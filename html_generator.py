@@ -22,7 +22,7 @@ from db import (
     query_usage_by_hour,
     query_usage_totals,
 )
-from report import format_bytes
+from report import format_bytes, parse_exclude_classes
 
 DEFAULT_HTML_PATH = os.path.expanduser("~/Library/Application Support/NetTally/dashboard.html")
 
@@ -284,17 +284,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Parse --exclude into a list; validate values
-    valid_classes = {"dark_wake_only", "sleep_then_full_wake"}
-    exclude_classifications: Optional[list[str]] = None
-    if args.exclude:
-        parsed = [c.strip() for c in args.exclude.split(",") if c.strip()]
-        invalid = [c for c in parsed if c not in valid_classes]
-        if invalid:
-            parser.error(
-                f"Unknown classification(s): {', '.join(invalid)}. Valid values: {', '.join(sorted(valid_classes))}"
-            )
-        exclude_classifications = parsed if parsed else None
+    # Parse --exclude into a validated classification list (shared with report)
+    exclude_classifications = parse_exclude_classes(parser, args.exclude)
 
     db_path = get_db_path(args.db)
     path = generate_html_report(

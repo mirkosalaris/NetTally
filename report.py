@@ -35,6 +35,30 @@ def format_bytes(num_bytes: int) -> str:
     return f"{val:.2f} TiB"
 
 
+VALID_EXCLUDE_CLASSES = {"dark_wake_only", "sleep_then_full_wake"}
+
+
+def parse_exclude_classes(
+    parser: argparse.ArgumentParser, raw: Optional[str]
+) -> Optional[list[str]]:
+    """Parse a comma-separated --exclude value into a validated classification list.
+
+    Returns None for an absent/empty value and calls parser.error() on any
+    unknown class so both CLIs reject typos identically. 'unknown_gap' is
+    deliberately not a valid exclude target — it's folded into awake wherever
+    it's aggregated.
+    """
+    if not raw:
+        return None
+    parsed = [c.strip() for c in raw.split(",") if c.strip()]
+    invalid = [c for c in parsed if c not in VALID_EXCLUDE_CLASSES]
+    if invalid:
+        parser.error(
+            f"Unknown classification(s): {', '.join(invalid)}. Valid values: {', '.join(sorted(VALID_EXCLUDE_CLASSES))}"
+        )
+    return parsed or None
+
+
 def _emit_json_or_csv(
     results: list[dict],
     fmt: str,
@@ -354,17 +378,8 @@ def main() -> None:
     elif args.today:
         days_filter = 0
 
-    # Parse --exclude into a list; drop unknown/empty tokens
-    valid_classes = {"dark_wake_only", "sleep_then_full_wake"}
-    exclude_classifications: Optional[list[str]] = None
-    if args.exclude:
-        parsed = [c.strip() for c in args.exclude.split(",") if c.strip()]
-        invalid = [c for c in parsed if c not in valid_classes]
-        if invalid:
-            parser.error(
-                f"Unknown classification(s): {', '.join(invalid)}. Valid values: {', '.join(sorted(valid_classes))}"
-            )
-        exclude_classifications = parsed if parsed else None
+    # Parse --exclude into a validated classification list (shared with html_generator)
+    exclude_classifications = parse_exclude_classes(parser, args.exclude)
 
     if args.by_5m:
         generate_by_5m_report(

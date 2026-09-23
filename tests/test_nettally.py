@@ -1,5 +1,6 @@
 """Unit tests for NetTally: gap classification, config, folding, and DB behavior."""
 
+import argparse
 import contextlib
 import csv
 import datetime
@@ -25,7 +26,7 @@ from db import (
     update_process_states,
 )
 from html_generator import generate_html_report
-from report import generate_totals_report
+from report import generate_totals_report, parse_exclude_classes
 
 
 class TestNettopProcIdParsing(unittest.TestCase):
@@ -184,6 +185,25 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(cfg["unknown_key"], "hello")
         # rest should be defaults
         self.assertEqual(cfg["html_top_apps_limit"], DEFAULTS["html_top_apps_limit"])
+
+
+class TestExcludeParsing(unittest.TestCase):
+    def test_none_or_empty_returns_none(self):
+        parser = argparse.ArgumentParser()
+        self.assertIsNone(parse_exclude_classes(parser, None))
+        self.assertIsNone(parse_exclude_classes(parser, ""))
+
+    def test_valid_classes_pass_through(self):
+        parser = argparse.ArgumentParser()
+        self.assertEqual(
+            parse_exclude_classes(parser, "dark_wake_only, sleep_then_full_wake"),
+            ["dark_wake_only", "sleep_then_full_wake"],
+        )
+
+    def test_unknown_class_errors(self):
+        parser = argparse.ArgumentParser()
+        with self.assertRaises(SystemExit):
+            parse_exclude_classes(parser, "awake_bucket")
 
 
 class TestAppFolder(unittest.TestCase):
