@@ -1,17 +1,12 @@
 """Unit tests for NetTally: gap classification, config, folding, and DB behavior."""
 
 import contextlib
+import datetime
 import io
+import json
 import os
-import sys
 import tempfile
 import unittest
-
-# Add parent dir to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-import datetime
-import json
 from unittest.mock import MagicMock, patch
 
 from app_folder import AppFolder
