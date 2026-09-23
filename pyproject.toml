@@ -1,6 +1,14 @@
+# Runtime contract: NetTally runs on Python >= 3.9, < 4.0. install.sh resolves
+# and pins the interpreter at install time (see
+# docs/decisions/0006-standalone-install-python-resolution.md); this is the
+# machine-readable declaration of the same floor.
+[project]
+name = "nettally"
+version = "0.1.0"
+requires-python = ">=3.9,<4"
+
 [tool.ruff]
-# Keep in sync with the oldest Python the code runs under:
-# the LaunchAgent and CLI all use the macOS system /usr/bin/python3 (3.9).
+# Keep in sync with `requires-python` above: the syntax/API floor the code may use.
 target-version = "py39"
 line-length = 100
 

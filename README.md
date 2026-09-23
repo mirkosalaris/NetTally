@@ -27,11 +27,24 @@ To install and register the background LaunchAgent service:
 ./install.sh
 ```
 
+Requires **Python 3.9+** (macOS system Python with the Xcode Command Line Tools installed, or
+any Homebrew / python.org Python). `install.sh` detects an interpreter, version-checks it,
+pins it for the background service and the CLI, and fails fast with a friendly message if
+none is available.
+
 This will:
-1. Copy scripts to `~/Library/Application Support/NetTally/`.
+1. Copy scripts to `~/Library/Application Support/NetTally/` (a fully standalone runtime).
 2. Generate and load `~/Library/LaunchAgents/com.nettally.daemon.plist`.
-3. Start background collector daemon (runs automatically on login/reboot).
-4. Symlink `./nettally` to `~/.local/bin/nettally` (if available).
+3. Start the background collector daemon (runs automatically on login/reboot).
+4. Symlink `nettally` to `~/.local/bin/nettally` (if available), pointing at the standalone
+   copy — you can delete the source folder after install; `nettally` and the daemon keep
+   working from Application Support.
+
+### Upgrading / Reconfiguring
+
+Re-run `./install.sh` (or `nettally install`) after pulling a new version, or after a macOS
+or Homebrew Python upgrade — it re-copies the code, re-pins the Python interpreter, and
+regenerates the LaunchAgent plist.
 
 ### Status Check
 
@@ -117,11 +130,17 @@ Opens a browser with a Chart.js dashboard featuring three granularity views:
 ~/Library/Application Support/NetTally/
   ├── usage.db          # SQLite DB with usage_5m and process_state tables
   ├── app_map.json      # Process canonicalization & folding configuration
+  ├── config.json       # Polling / reporting configuration
+  ├── python_path       # Python interpreter pinned at install time
   ├── collector.py      # Background nettop poller & delta engine
   ├── db.py             # SQLite database interface with 5m/hourly/daily query helpers
   ├── app_folder.py     # Helper process canonicalization logic
   ├── report.py         # CLI text reporting
-  └── html_generator.py # Multi-resolution HTML dashboard builder
+  ├── html_generator.py # Multi-resolution HTML dashboard builder
+  ├── templates/        # HTML dashboard template
+  ├── nettally          # CLI wrapper (symlinked onto PATH as `nettally` for reinstall/repair)
+  ├── install.sh        # Re-runnable installer (`nettally install`)
+  └── uninstall.sh      # (`nettally uninstall`)
 
 ~/Library/LaunchAgents/
   └── com.nettally.daemon.plist

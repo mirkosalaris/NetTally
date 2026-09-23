@@ -15,24 +15,40 @@ misread as one instant of real traffic. The data pipeline is entirely on-device:
 lives in a local SQLite database, is never uploaded, and there is no telemetry. The source code
 itself is version-controlled and hosted on GitHub (origin), and commits are pushed there.
 
-## Critical gotcha: there are TWO live copies of the Python files
+## Deployed copy: Application Support is the standalone runtime, not a shadow copy
 
-- `./nettally report` / `./nettally html` / `./nettally run-once` run the `.py` files sitting
-  in **this workspace** (the `nettally` wrapper resolves paths relative to its own location).
-- The always-on background collector does **not** run from here. `install.sh` copies
-  `collector.py`, `db.py`, `config.py`, `app_folder.py` (and, currently, `report.py` /
-  `html_generator.py`, though nothing actually executes those two from there — see
-  `docs/decisions/0005-app-support-copy-scope.md`) into
-  `~/Library/Application Support/NetTally/`, and the LaunchAgent plist
-  (`com.nettally.daemon.plist`) hardcodes that path as `collector.py`'s location.
-- **Consequence: after editing `collector.py`, `db.py`, `config.py`, or `app_folder.py`, you
-  must re-run `./install.sh` for the running daemon to pick up the change.** Restarting the
-  LaunchAgent without re-running `install.sh` just relaunches the old copy. Editing
-  `report.py` / `html_generator.py` needs no reinstall — the CLI always reads the workspace
-  copy directly.
+- The always-on background collector runs from `~/Library/Application Support/NetTally/`
+  (the LaunchAgent plist's `ProgramArguments` points at `collector.py` there).
+- Once installed, the `nettally` CLI on your PATH also runs from there: `install.sh` copies
+  `collector.py`, `db.py`, `config.py`, `app_folder.py`, `report.py`, `html_generator.py`,
+  `templates/`, the `nettally` wrapper, `install.sh`/`uninstall.sh`, and the plist template
+  into Application Support, and symlinks `~/bin/nettally` → `$APP_DIR/nettally`. Deleting the
+  source folder after install is fine. (See `docs/decisions/0006-...`; it resolves the open
+  question in `0005`.)
+- `./nettally ...` from **this workspace** is the development path: the wrapper resolves paths
+  relative to its own (symlink-resolved) location, so it keeps running the workspace copies of
+  `report.py` / `html_generator.py` / `collector.py` directly.
+- **Consequence: after editing any of `collector.py`, `db.py`, `config.py`, `app_folder.py`,
+  `report.py`, `html_generator.py`, or `templates/dashboard_template.html`, you must re-run
+  `./install.sh` (or `nettally install`) for the deployed daemon **and** the PATH CLI to pick
+  up the change.** Restarting the LaunchAgent without re-running `install.sh` just relaunches
+  the old copy. The workspace `./nettally` sees edits immediately.
 - The database (`usage.db`, default path `~/Library/Application Support/NetTally/usage.db`,
   overridable via `--db`) is a single shared file regardless of which copy of the code touched
   it — there's no duplicate-database confusion, only duplicate-*code* confusion.
+
+## Python runtime contract
+
+- NetTally runs on **Python >= 3.9, < 4.0** — declared as `requires-python` in
+  `pyproject.toml`, with ruff's `target-version = "py39"` enforcing the same syntax/API floor.
+- `install.sh` resolves the interpreter **once, at install time**: first `python3` on PATH,
+  version-checked, then recorded in `$APP_DIR/python_path` and baked into the generated
+  LaunchAgent plist. The CLI wrapper reads the same `python_path`, so daemon and CLI share one
+  interpreter once installed; before installation it falls back to `env python3`.
+- The `/usr/bin/python3` system stub is only run after `xcode-select -p` confirms the Command
+  Line Tools exist, so install never pops the GUI "Developer Tools not found" dialog. If no
+  usable Python is found, `install.sh` fails fast with a friendly message.
+- After a macOS or Homebrew Python change, re-run `./install.sh` to re-pin.
 
 ## Architecture at a glance
 
@@ -69,8 +85,9 @@ report.py / html_generator.py → read usage_5m via db.py's query_usage_by_{5m,h
    produces a lint/type finding you're confident is a false positive, say so explicitly instead
    of silently growing `ignore` lists or adding `# type: ignore` (both are kept minimal
    deliberately).
-3. If you touched `collector.py` / `db.py` / `config.py` / `app_folder.py`: tell the user (or
-   run, if you can) `./install.sh` again — see the gotcha above.
+3. If you touched any of the deployed files (`collector.py` / `db.py` / `config.py` /
+   `app_folder.py` / `report.py` / `html_generator.py` / `templates/`): tell the user (or
+   run, if you can) `./install.sh` — see the deployed-copy section above.
 4. If you touched anything sleep/wake/gap-classification related, verify against real data if
    at all possible (a crafted repro or a real `usage.db` snapshot), not just unit tests with
    mocked `pmset` output. This codebase's nastiest bugs were all "looks right in isolation, but

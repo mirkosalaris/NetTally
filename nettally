@@ -1,8 +1,34 @@
 #!/usr/bin/env bash
-# nettally CLI entry point wrapper
+# nettally CLI entry point wrapper.
+#
+# Runs from two locations:
+#   * the source tree (development):     ./nettally <command>
+#   * the standalone install (deployed): $APP_DIR/nettally, symlinked onto PATH
+# Every path below resolves relative to wherever this script actually lives;
+# symlinks are resolved first so a PATH symlink lands in the right directory.
 
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-PYTHON="/usr/bin/env python3"
+# Resolve symlinks so $SCRIPT_DIR points at the real script, not at the
+# directory that merely holds the PATH symlink (install.sh symlinks
+# ~/bin/nettally -> APP_DIR/nettally).
+SELF="$0"
+while [ -h "$SELF" ]; do
+    LINK="$(readlink "$SELF")"
+    case "$LINK" in
+        /*) SELF="$LINK" ;;
+        *) SELF="$(dirname "$SELF")/$LINK" ;;
+    esac
+done
+SCRIPT_DIR="$( cd "$( dirname "$SELF" )" && pwd )"
+
+# Python runtime: prefer the interpreter pinned by install.sh (so the daemon and
+# the CLI share one), falling back to `env python3` before installation.
+PYTHON_FILE="$HOME/Library/Application Support/NetTally/python_path"
+if [ -f "$PYTHON_FILE" ]; then
+    PYTHON="$(head -n 1 "$PYTHON_FILE")"
+    [ -x "$PYTHON" ] || PYTHON="/usr/bin/env python3"
+else
+    PYTHON="/usr/bin/env python3"
+fi
 
 case "$1" in
     report)

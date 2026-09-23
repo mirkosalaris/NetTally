@@ -1,7 +1,10 @@
-.PHONY: test lint format typecheck
+.PHONY: test lint format typecheck install
 
 test:
 	python3 -m unittest discover -s tests
+
+install:
+	./install.sh
 
 # Ruff: fast Python linter (lint rules) + formatter (reflow/spacing).
 lint:

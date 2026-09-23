@@ -2,6 +2,12 @@
 
 Date: 2026-08-22 (observation, no code change made)
 
+> **Superseded by [0006](0006-standalone-install-python-resolution.md).** The Application
+> Support copy is now a true standalone runtime: `report.py` / `html_generator.py` /
+> `templates/` there are actually used (the deployed `nettally` CLI reads them), and the
+> installer is deployed so `nettally install` acts as a repair/reconfigure command. Keep the
+> body below as the historical reasoning that prompted the rework.
+
 ## Context
 
 `install.sh` copies six files into `~/Library/Application Support/NetTally/`: `collector.py`,

@@ -1,12 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- install.sh substitutes the home directory, the Python interpreter and the
+     polling interval into this template at install time. Never edit the copy
+     in ~/Library/LaunchAgents — it is regenerated on every install. -->
 <plist version="1.0">
 <dict>
     <key>Label</key>
     <string>com.nettally.daemon</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
+        <string>__PYTHON__</string>
         <string>__HOME__/Library/Application Support/NetTally/collector.py</string>
     </array>
     <key>RunAtLoad</key>
@@ -14,7 +17,7 @@
     <key>KeepAlive</key>
     <true/>
     <key>ThrottleInterval</key>
-    <integer>30</integer>
+    <integer>__THROTTLE_INTERVAL__</integer>
     <key>StandardOutPath</key>
     <string>__HOME__/Library/Logs/NetTally/collector.out.log</string>
     <key>StandardErrorPath</key>
