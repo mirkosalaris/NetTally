@@ -159,9 +159,13 @@ class TestConfig(unittest.TestCase):
         malformed_path = os.path.join(self.temp_dir.name, "malformed_config.json")
         with open(malformed_path, "w", encoding="utf-8") as f:
             f.write("{invalid json: //, }")
-        cfg = load_config(malformed_path)
-        # Should gracefully fallback to defaults
+        with self.assertLogs("config", level="WARNING") as logs:
+            cfg = load_config(malformed_path)
+        # Should gracefully fallback to defaults ...
         self.assertEqual(cfg, DEFAULTS)
+        # ... and say so in the log (also keeps the last-resort handler from
+        # leaking the warning to the test run's real stderr).
+        self.assertTrue(any("Failed to load config" in line for line in logs.output))
 
     def test_malformed_json_warns_on_stderr(self):
         malformed_path = os.path.join(self.temp_dir.name, "malformed_config.json")
@@ -202,7 +206,7 @@ class TestExcludeParsing(unittest.TestCase):
 
     def test_unknown_class_errors(self):
         parser = argparse.ArgumentParser()
-        with self.assertRaises(SystemExit):
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             parse_exclude_classes(parser, "awake_bucket")
 
 
