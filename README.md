@@ -169,6 +169,32 @@ Use the `./nettally` CLI command to query and visualize data:
 ./nettally report --by-5m --format json
 ```
 
+### Excluding Sleep/Dark-Wake Traffic
+
+`report` and `html` both accept `--exclude`, a comma-separated list of gap
+classifications to leave out of the totals:
+
+```bash
+# only traffic that happened while you were actually awake
+./nettally report --exclude dark_wake_only,sleep_then_full_wake
+
+# drop just the post-wake catch-up bursts
+./nettally report --exclude sleep_then_full_wake
+```
+
+The only valid values are `dark_wake_only` and `sleep_then_full_wake`; anything else is
+rejected with an error listing the valid ones. `unknown_gap` is deliberately *not*
+accepted — it is folded into the awake bucket everywhere it is aggregated, so excluding it
+would be a no-op that looks like it worked.
+
+For the dashboard, `--exclude` only decides which checkboxes start **unchecked**. All
+three layers are always embedded in the file, so you can toggle any of them back on
+interactively:
+
+```bash
+./nettally html --exclude sleep_then_full_wake
+```
+
 ### Interactive HTML Dashboard
 ```bash
 ./nettally html
@@ -178,6 +204,24 @@ Opens a browser with a Chart.js dashboard featuring three granularity views:
 - **5-Min** — per-app stacked bar chart across 5-minute intervals
 - **Hourly** — per-app stacked bar chart across hours
 - **Daily** — per-app stacked bar chart across days
+
+On-chart controls, all of them live (nothing requires a regeneration):
+- **Date range** — two `datetime-local` inputs plus **Apply** / **Reset**, which filter
+  every granularity view to the selected window.
+- **Granularity** — 5-Min / Hourly / Daily buttons switch the dataset in place.
+- **Three classification checkboxes** — *Awake*, *Dark-wake gaps*, and *Post-wake
+  catch-up bursts*. Unchecking one removes that layer from the bars, and the per-bar
+  classification is recomputed against what is actually still displayed: a bar is only
+  marked as exclusively dark-wake once the awake bytes are unchecked too, otherwise a
+  mixed hour would keep looking awake no matter what you filtered.
+
+Two visual cues carry the classification, so a gap is identifiable without cross-referencing
+the database:
+- **Diagonal stripes** mark bars whose traffic is entirely `dark_wake_only`, drawn in the
+  app's own colour so they stay legible against a stacked bar.
+- **Tooltips annotate** each bar: `⚠ dark-wake gap` for `dark_wake_only` and
+  `↑ post-wake burst` for `sleep_then_full_wake`. A tooltip is only annotated when the bar
+  is exclusively that class, matching the stripe logic.
 
 ---
 
