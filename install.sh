@@ -124,6 +124,10 @@ cp "$SCRIPT_DIR/uninstall.sh" "$APP_DIR/"
 cp "$SCRIPT_DIR/com.nettally.daemon.plist" "$APP_DIR/"
 mkdir -p "$APP_DIR/templates"
 cp "$SCRIPT_DIR/templates/dashboard_template.html" "$APP_DIR/templates/"
+# The vendored Chart.js bundle is inlined into every generated report, so the
+# deployed html_generator.py needs it alongside the template.
+cp "$SCRIPT_DIR/templates/chart.umd.js" "$APP_DIR/templates/"
+cp "$SCRIPT_DIR/templates/CHARTJS-LICENSE.md" "$APP_DIR/templates/"
 chmod +x "$APP_DIR/nettally" "$APP_DIR/install.sh" "$APP_DIR/uninstall.sh"
 install_user_file "$SCRIPT_DIR/app_map.json" "$APP_DIR/app_map.json" "app_map.json"
 install_user_file "$SCRIPT_DIR/config.json" "$APP_DIR/config.json" "config.json"

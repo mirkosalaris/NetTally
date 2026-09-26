@@ -11,6 +11,7 @@ import logging
 import os
 import plistlib
 import pty
+import re
 import shutil
 import subprocess
 import tempfile
@@ -20,6 +21,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 import collector
+import html_generator as chartjs_html_generator
 from app_folder import AppFolder
 from collector import check_dark_wake_still_active, detect_and_classify_gap, parse_nettop_proc_id
 from config import DEFAULTS, load_config
@@ -841,6 +843,99 @@ class TestDaemonPlistAndStatusOutput(unittest.TestCase):
     def _collector_source(self):
         with open(os.path.join(self.root, "collector.py"), encoding="utf-8") as f:
             return f.read()
+
+
+class TestVendoredChartJs(unittest.TestCase):
+    """The dashboard must be self-contained: no CDN, nothing fetched at view time."""
+
+    def setUp(self):
+        self.root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+
+    def _generate(self):
+        db = os.path.join(self.tmp, "usage.db")
+        init_db(db)
+        day_str = datetime.date.today().isoformat()
+        record_usage_deltas(db, f"{day_str} 14:00", day_str, {"Safari": (1000, 2000)})
+        out = os.path.join(self.tmp, "report.html")
+        generate_html_report(db, days=7, output_path=out)
+        with open(out, encoding="utf-8") as f:
+            return f.read()
+
+    def test_report_has_no_external_script_or_stylesheet(self):
+        html = self._generate()
+        self.assertEqual(re.findall(r"<script[^>]*\ssrc=", html), [])
+        self.assertEqual(re.findall(r"<link[^>]*\shref=", html), [])
+
+    def test_report_does_not_reference_a_cdn(self):
+        html = self._generate()
+        for host in ("cdn.jsdelivr.net", "unpkg.com", "cdnjs.cloudflare.com", "googleapis.com"):
+            self.assertNotIn(host, html, f"generated report still points at {host}")
+
+    def test_chart_js_is_inlined(self):
+        html = self._generate()
+        self.assertIn("Chart.js v4.4.7", html)
+        self.assertIn(chartjs_html_generator.CHART_JS[:200], html)
+
+    def test_report_is_one_self_contained_file(self):
+        """Works from any --out path because the bundle travels inside the report."""
+        html = self._generate()
+        self.assertEqual(
+            html.count("<script"), 2, "expected the inlined library plus the dashboard script"
+        )
+
+    def test_no_placeholders_are_left_unsubstituted(self):
+        html = self._generate()
+        self.assertEqual(re.findall(r"__[A-Z][A-Z0-9_]*__", html), [])
+
+    def test_inline_payload_cannot_close_the_script_tag_early(self):
+        """A literal </script> in the bundle would truncate the tag in the report."""
+        self.assertNotIn("</script", chartjs_html_generator.CHART_JS)
+
+    def test_loading_escapes_a_closing_script_tag(self):
+        payload = "var a = '</script>';"
+        path = os.path.join(self.tmp, "chart.umd.js")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(payload)
+        original = chartjs_html_generator._CHARTJS_PATH
+        chartjs_html_generator._CHARTJS_PATH = path
+        try:
+            loaded = chartjs_html_generator._load_chartjs()
+        finally:
+            chartjs_html_generator._CHARTJS_PATH = original
+        self.assertNotIn("</script", loaded)
+        self.assertIn("<\\/script", loaded)
+
+    def test_vendored_bundle_is_the_pinned_version(self):
+        with open(os.path.join(self.root, "templates", "chart.umd.js"), encoding="utf-8") as f:
+            banner = f.read(200)
+        self.assertIn("Chart.js v4.4.7", banner)
+        self.assertIn("MIT License", banner)
+
+    def test_vendored_bundle_has_no_sourcemap_pointer(self):
+        with open(os.path.join(self.root, "templates", "chart.umd.js"), encoding="utf-8") as f:
+            self.assertNotIn("sourceMappingURL", f.read())
+
+    def test_license_is_vendored_next_to_the_bundle(self):
+        with open(
+            os.path.join(self.root, "templates", "CHARTJS-LICENSE.md"), encoding="utf-8"
+        ) as f:
+            self.assertIn("MIT License", f.read())
+
+    def test_installer_copies_the_bundle_so_deployed_html_still_works(self):
+        """install.sh must ship templates/chart.umd.js or the deployed report breaks."""
+        with open(os.path.join(self.root, "install.sh"), encoding="utf-8") as f:
+            installer = f.read()
+        copied = set(re.findall(r'templates/([A-Za-z0-9_.-]+)"', installer))
+        self.assertIn("chart.umd.js", copied)
+        self.assertIn("CHARTJS-LICENSE.md", copied)
+
+    def test_template_still_carries_the_placeholder(self):
+        with open(
+            os.path.join(self.root, "templates", "dashboard_template.html"), encoding="utf-8"
+        ) as f:
+            self.assertIn("__CHART_JS__", f.read())
 
 
 if __name__ == "__main__":

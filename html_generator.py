@@ -26,9 +26,9 @@ from report import format_bytes, parse_exclude_classes
 
 DEFAULT_HTML_PATH = os.path.expanduser("~/Library/Application Support/NetTally/dashboard.html")
 
-_TEMPLATE_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "templates", "dashboard_template.html"
-)
+_TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+_TEMPLATE_PATH = os.path.join(_TEMPLATE_DIR, "dashboard_template.html")
+_CHARTJS_PATH = os.path.join(_TEMPLATE_DIR, "chart.umd.js")
 
 
 def _load_template() -> str:
@@ -36,7 +36,21 @@ def _load_template() -> str:
         return f.read()
 
 
+def _load_chartjs() -> str:
+    """Return the vendored Chart.js UMD source, ready to inline into a <script>.
+
+    The bundle is inlined rather than referenced so the generated report stays a
+    single self-contained file that works from any --out path, with no network
+    access at all -- see templates/CHARTJS-LICENSE.md (MIT).
+    """
+    with open(_CHARTJS_PATH, encoding="utf-8") as f:
+        source = f.read()
+    # A literal "</script>" inside the payload would close the tag early.
+    return source.replace("</script", "<\\/script")
+
+
 HTML_TEMPLATE = _load_template()
+CHART_JS = _load_chartjs()
 
 
 def build_view_dataset(
@@ -241,7 +255,8 @@ def generate_html_report(
     # The full viewsData is still embedded so the user can toggle them back on.
     cls_initially_excluded = exclude_classifications or []
 
-    html_content = HTML_TEMPLATE.replace("__GENERATED_TIME__", now_str)
+    html_content = HTML_TEMPLATE.replace("__CHART_JS__", CHART_JS)
+    html_content = html_content.replace("__GENERATED_TIME__", now_str)
     html_content = html_content.replace("__TOTAL_TRANSFER__", format_bytes(grand_total))
     html_content = html_content.replace("__TOTAL_IN__", format_bytes(grand_in))
     html_content = html_content.replace("__TOTAL_OUT__", format_bytes(grand_out))

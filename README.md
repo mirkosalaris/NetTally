@@ -9,7 +9,7 @@ A lightweight, local-only background daemon and CLI utility for macOS that recor
 - **5-Minute Block Granularity**: Tracks network bytes in 5-minute intervals — pinpoint which app caused a spike at 14:15 vs 14:20.
 - **Multi-Resolution Reporting**: Roll up data on demand to hourly or daily totals without losing the underlying detail.
 - **Per-App & Per-Day Granularity**: Aggregates network bytes by application name and local calendar day (`YYYY-MM-DD`).
-- **Zero Ongoing Cost & Local-Only**: Operates 100% locally with zero cloud dependencies, network uploads, or external telemetry.
+- **Zero Ongoing Cost & Local-Only**: Operates 100% locally with zero cloud dependencies, network uploads, or external telemetry. The HTML dashboard vendors its charting library, so viewing a report makes no network requests at all.
 - **Indefinite Retention**: Stores transfer history in a local SQLite database (`~/Library/Application Support/NetTally/usage.db`).
 - **No Sudo Required**: Uses macOS `nettop` in non-elevated user mode and runs seamlessly as a background `LaunchAgent`.
 - **Smart Process Folding**: Groups helper processes (e.g., `Google Chrome Helper`, `Claude Helper`, `Code Helper`) into clean app names using configurable rules in `app_map.json`.
@@ -279,6 +279,21 @@ make lint      # ruff (checks + formatting)
 make typecheck # mypy
 make format    # ruff format
 ```
+
+---
+
+## Third-Party Code
+
+| Component | Version | License | Where |
+| --- | --- | --- | --- |
+| [Chart.js](https://www.chartjs.org) | 4.4.7 | MIT | `templates/chart.umd.js`, inlined into every generated dashboard |
+
+The vendored bundle is the official `dist/chart.umd.js` build with its `sourceMappingURL`
+comment removed (the `.map` is not vendored, so leaving the pointer would make devtools
+request a file that does not exist). Its license text is kept verbatim alongside it in
+[`templates/CHARTJS-LICENSE.md`](templates/CHARTJS-LICENSE.md). To upgrade, replace the
+bundle with a new official build, keep the version banner, and update the test that
+asserts the pinned version.
 
 ---
 
