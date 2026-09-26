@@ -1,12 +1,15 @@
 """Unit tests for NetTally: gap classification, config, folding, and DB behavior."""
 
 import argparse
+import ast
 import contextlib
 import csv
 import datetime
 import io
 import json
+import logging
 import os
+import plistlib
 import pty
 import shutil
 import subprocess
@@ -16,6 +19,7 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
+import collector
 from app_folder import AppFolder
 from collector import check_dark_wake_still_active, detect_and_classify_gap, parse_nettop_proc_id
 from config import DEFAULTS, load_config
@@ -694,6 +698,149 @@ class TestInstallerUserFileHandling(unittest.TestCase):
         self.assertEqual(self._backups(), [])
         self.assertIn("No terminal attached", out)
         self.assertIn("__DONE__", out)
+
+
+class TestCollectorLogging(unittest.TestCase):
+    """The collector owns a rotating log file instead of relying on launchd."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        root = logging.getLogger()
+        saved_handlers = list(root.handlers)
+        saved_level = root.level
+        saved = (
+            collector.LOG_DIR,
+            collector.LOG_FILE,
+            collector.LOG_MAX_BYTES,
+            collector.LOG_BACKUP_COUNT,
+        )
+
+        def restore():
+            for h in list(root.handlers):
+                if h not in saved_handlers:
+                    h.close()
+                    root.removeHandler(h)
+            root.handlers[:] = saved_handlers
+            root.setLevel(saved_level)
+            (
+                collector.LOG_DIR,
+                collector.LOG_FILE,
+                collector.LOG_MAX_BYTES,
+                collector.LOG_BACKUP_COUNT,
+            ) = saved
+
+        self.addCleanup(restore)
+        collector.LOG_DIR = self.tmp
+        collector.LOG_FILE = os.path.join(self.tmp, "collector.log")
+        collector.LOG_MAX_BYTES = 512
+        collector.LOG_BACKUP_COUNT = 2
+
+    def test_log_is_written_to_the_collector_log_file(self):
+        collector.setup_logging()
+        logging.getLogger("test").info("hello from the collector")
+        with open(collector.LOG_FILE, encoding="utf-8") as f:
+            content = f.read()
+        self.assertIn("hello from the collector", content)
+        self.assertIn("INFO", content)
+
+    def test_log_rotation_is_bounded(self):
+        collector.setup_logging()
+        log = logging.getLogger("test")
+        for i in range(200):
+            log.info("padding line %d %s", i, "x" * 40)
+        for h in logging.getLogger().handlers:
+            h.flush()
+
+        self.assertLessEqual(os.path.getsize(collector.LOG_FILE), collector.LOG_MAX_BYTES)
+        rotated = [n for n in os.listdir(self.tmp) if n.startswith("collector.log.")]
+        # backupCount backups, and no more: the cap is what stops the unbounded growth.
+        self.assertEqual(len(rotated), collector.LOG_BACKUP_COUNT)
+        self.assertNotIn("collector.log.3", rotated)
+
+    def test_unwritable_log_dir_falls_back_to_stderr(self):
+        blocked = os.path.join(self.tmp, "not-a-dir")
+        with open(blocked, "w", encoding="utf-8") as f:
+            f.write("x")
+        collector.LOG_DIR = blocked
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            collector.setup_logging()
+        logging.getLogger("test").info("still logged")
+        self.assertIn("logging to stderr instead", stderr.getvalue())
+
+
+class TestDaemonPlistAndStatusOutput(unittest.TestCase):
+    """The plist and `nettally status` must agree on where the log lives."""
+
+    def setUp(self):
+        self.root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(self.root, "com.nettally.daemon.plist"), encoding="utf-8") as f:
+            template = f.read()
+        # The tracked plist is a template: install.sh substitutes these before it
+        # is written to ~/Library/LaunchAgents. Do the same, which also proves the
+        # placeholders are the only thing standing between it and a valid plist.
+        for placeholder, value in (
+            ("__HOME__", "/tmp/nettally-test"),
+            ("__PYTHON__", "/usr/bin/python3"),
+            ("__THROTTLE_INTERVAL__", "10"),
+        ):
+            template = template.replace(placeholder, value)
+        self.plist = plistlib.loads(template.encode("utf-8"))
+        with open(os.path.join(self.root, "nettally"), encoding="utf-8") as f:
+            self.wrapper = f.read()
+
+    def test_plist_keeps_stderr_for_startup_crashes(self):
+        self.assertIn("StandardErrorPath", self.plist)
+        self.assertIn("collector.err.log", self.plist["StandardErrorPath"])
+
+    def test_plist_no_longer_redirects_stdout(self):
+        self.assertNotIn("StandardOutPath", self.plist)
+
+    def test_daemon_writes_nothing_to_stdout(self):
+        """Only the foreground `--once` path prints, so dropping stdout is safe."""
+        tree = ast.parse(self._collector_source())
+        stdout_prints = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "print"
+            and not any(kw.arg == "file" for kw in node.keywords)
+        ]
+        once_guards = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.If) and self._is_once_test(node.test)
+        ]
+        self.assertEqual(len(stdout_prints), 1, "collector.py grew a stdout write under the daemon")
+        self.assertTrue(
+            any(lineno > guard for lineno in stdout_prints for guard in once_guards),
+            "the only stdout print must sit behind the --once guard",
+        )
+
+    def test_status_reports_the_collector_log_not_the_retired_one(self):
+        self.assertIn("collector.log", self.wrapper)
+        self.assertNotIn("collector.out.log", self.wrapper)
+
+    def test_collector_defines_the_rotation_bounds(self):
+        source = self._collector_source()
+        self.assertIn("RotatingFileHandler", source)
+        self.assertIn("LOG_BACKUP_COUNT", source)
+
+    @staticmethod
+    def _is_once_test(node):
+        """True for the `if args.once:` guard, by shape rather than by source text."""
+        return (
+            isinstance(node, ast.Attribute)
+            and node.attr == "once"
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "args"
+        )
+
+    def _collector_source(self):
+        with open(os.path.join(self.root, "collector.py"), encoding="utf-8") as f:
+            return f.read()
 
 
 if __name__ == "__main__":

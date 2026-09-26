@@ -18,8 +18,11 @@
     <true/>
     <key>ThrottleInterval</key>
     <integer>__THROTTLE_INTERVAL__</integer>
-    <key>StandardOutPath</key>
-    <string>__HOME__/Library/Logs/NetTally/collector.out.log</string>
+    <!-- No StandardOutPath: the collector writes its log to
+         ~/Library/Logs/NetTally/collector.log itself, with rotation, and never
+         writes to stdout under the daemon. StandardErrorPath is kept for
+         failures that happen before logging is configured (import errors, a bad
+         interpreter), and is normally empty. -->
     <key>StandardErrorPath</key>
     <string>__HOME__/Library/Logs/NetTally/collector.err.log</string>
 </dict>

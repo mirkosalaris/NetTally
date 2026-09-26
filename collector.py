@@ -10,6 +10,8 @@ traffic.
 import argparse
 import datetime
 import logging
+import logging.handlers
+import os
 import re
 import signal
 import subprocess
@@ -34,6 +36,38 @@ from db import (
 logger = logging.getLogger(__name__)
 
 RUNNING = True
+
+LOG_DIR = os.path.expanduser("~/Library/Logs/NetTally")
+LOG_FILE = os.path.join(LOG_DIR, "collector.log")
+LOG_MAX_BYTES = 5 * 1024 * 1024
+LOG_BACKUP_COUNT = 3
+LOG_FORMAT = "%(asctime)s %(levelname)s %(message)s"
+
+
+def setup_logging() -> None:
+    """Route INFO+ to a size-capped log file rather than launchd's stdout/stderr.
+
+    A launchd-redirected stream is never rotated, and the collector emits a few
+    lines per poll indefinitely, so the file grew ~375 KB/day (~137 MB/year)
+    until this existed. A RotatingFileHandler bounds it at LOG_MAX_BYTES x
+    (1 + LOG_BACKUP_COUNT) and behaves identically whether or not stdout is a
+    terminal, which is what made the old `stream=sys.stderr` setup awkward to
+    test. launchd's StandardErrorPath stays in the plist on purpose: it is the
+    only place a failure that happens *before* this runs -- an import error, a
+    bad interpreter -- can still be seen.
+    """
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        handler: logging.Handler = logging.handlers.RotatingFileHandler(
+            LOG_FILE, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT
+        )
+    except OSError as e:
+        # Never let a logging problem stop collection: fall back to stderr, where
+        # launchd still captures it, and let the daemon keep running.
+        print(f"Could not open {LOG_FILE} ({e}); logging to stderr instead.", file=sys.stderr)
+        handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    logging.basicConfig(level=logging.INFO, handlers=[handler])
 
 
 def signal_handler(signum: int, frame: object) -> None:
@@ -318,20 +352,12 @@ def main() -> None:
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    # When stdout/stderr are redirected to a log file (LaunchAgent, `>` redirection),
-    # Python block-buffers them, so a healthy collector can appear frozen for many
-    # minutes. Make the daemon's log stream line-buffered and flushed on newline, and
-    # route diagnostics through stdlib logging (INFO+ to stderr, which launchd already
-    # redirects to collector.err.log).
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is not None:
-            reconfigure(line_buffering=True)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        stream=sys.stderr,
-    )
+    # Diagnostics go to a rotating collector.log owned by this process (see
+    # setup_logging); launchd's StandardErrorPath is reserved for failures that
+    # happen before logging is configured. The daemon itself never writes to
+    # stdout -- only `--once` does, when it is attached to a terminal -- so the
+    # plist no longer redirects StandardOutPath.
+    setup_logging()
 
     db_path = get_db_path(args.db)
     init_db(db_path)

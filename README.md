@@ -94,6 +94,23 @@ To check if the daemon is active and view recent logs:
 ./nettally status
 ```
 
+#### Logs
+
+The collector writes its own log, so there is one file to read:
+
+| File | Contents |
+| --- | --- |
+| `~/Library/Logs/NetTally/collector.log` | Everything, INFO and up. Rotated at 5 MB, keeping 3 backups (`collector.log.1` … `.3`) |
+| `~/Library/Logs/NetTally/collector.err.log` | Normally empty. Only output produced *before* the collector could open its own log — an import error, a bad interpreter, an unwritable log directory |
+
+```bash
+tail -f ~/Library/Logs/NetTally/collector.log
+```
+
+Rotation is why the log is capped rather than growing forever: a launchd-redirected
+stream never rotates, and the collector logs a few lines per poll indefinitely, which
+measured out at roughly 375 KB/day.
+
 ### Uninstallation
 
 To stop and remove the background service (preserving your data):

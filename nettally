@@ -50,15 +50,20 @@ case "$1" in
     status)
         echo "=== NetTally Service Status ==="
         launchctl list 2>/dev/null | grep -E "com\.nettally\.daemon" || echo "Service is not currently loaded in launchctl."
-        if [ -f "$HOME/Library/Logs/NetTally/collector.out.log" ]; then
+        LOG_DIR="$HOME/Library/Logs/NetTally"
+        if [ -s "$LOG_DIR/collector.log" ]; then
             echo ""
-            echo "--- Recent Out Log (last 5 lines) ---"
-            tail -n 5 "$HOME/Library/Logs/NetTally/collector.out.log"
+            echo "--- Recent Log (last 5 lines) ---"
+            tail -n 5 "$LOG_DIR/collector.log"
+            echo ""
+            echo "Full log: $LOG_DIR/collector.log (older entries rotate to collector.log.1, .2, ...)"
         fi
-        if [ -f "$HOME/Library/Logs/NetTally/collector.err.log" ]; then
+        # Non-empty only when the collector died before it could open its own
+        # log -- an import error, a bad interpreter, a failed --db path.
+        if [ -s "$LOG_DIR/collector.err.log" ]; then
             echo ""
-            echo "--- Recent Error Log (last 5 lines) ---"
-            tail -n 5 "$HOME/Library/Logs/NetTally/collector.err.log"
+            echo "--- Startup/Crash Output (last 20 lines) ---"
+            tail -n 20 "$LOG_DIR/collector.err.log"
         fi
         ;;
     install)

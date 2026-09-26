@@ -128,6 +128,12 @@ chmod +x "$APP_DIR/nettally" "$APP_DIR/install.sh" "$APP_DIR/uninstall.sh"
 install_user_file "$SCRIPT_DIR/app_map.json" "$APP_DIR/app_map.json" "app_map.json"
 install_user_file "$SCRIPT_DIR/config.json" "$APP_DIR/config.json" "config.json"
 
+# The collector now writes collector.log itself (with rotation) and the plist no
+# longer sets StandardOutPath, so nothing writes this file any more. It was left
+# behind by the pre-logging-rewrite daemon; drop it so it cannot be mistaken for
+# a current log. collector.err.log is kept -- it still catches startup crashes.
+rm -f "$LOG_DIR/collector.out.log"
+
 # 3. Record the resolved interpreter for the CLI wrapper and the plist.
 printf '%s\n' "$PYTHON" > "$APP_DIR/python_path"
 
