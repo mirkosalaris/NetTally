@@ -31,9 +31,11 @@ itself is version-controlled and hosted on GitHub (origin), and commits are push
   `report.py` / `html_generator.py` / `collector.py` directly.
 - **Consequence: after editing any of `collector.py`, `db.py`, `config.py`, `app_folder.py`,
   `report.py`, `html_generator.py`, or `templates/dashboard_template.html`, you must re-run
-  `./install.sh` (or `nettally install`) for the deployed daemon **and** the PATH CLI to pick
-  up the change.** Restarting the LaunchAgent without re-running `install.sh` just relaunches
-  the old copy. The workspace `./nettally` sees edits immediately.
+  `./install.sh` for the deployed daemon **and** the PATH CLI to pick up the change.**
+  Restarting the LaunchAgent without re-running `install.sh` just relaunches the old copy.
+  The workspace `./nettally` sees edits immediately. Only the source tree can do this:
+  the Application Support copy is the runtime, so upgrading it means a fresh source tree
+  and a re-run of its `./install.sh`.
 - The database (`usage.db`, default path `~/Library/Application Support/NetTally/usage.db`,
   overridable via `--db`) is a single shared file regardless of which copy of the code touched
   it — there's no duplicate-database confusion, only duplicate-*code* confusion.

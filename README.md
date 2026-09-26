@@ -45,9 +45,10 @@ This will:
 
 ### Upgrading / Reconfiguring
 
-Re-run `./install.sh` (or `nettally install`) after pulling a new version, or after a macOS
+Re-run `./install.sh` after pulling a new version, or after a macOS
 or Homebrew Python upgrade — it re-copies the code, re-pins the Python interpreter, and
-regenerates the LaunchAgent plist.
+regenerates the LaunchAgent plist. The source tree is the only place this can be run from:
+the copy in Application Support is the runtime, not an upgrade path.
 
 ### Status Check
 
@@ -141,9 +142,9 @@ Opens a browser with a Chart.js dashboard featuring three granularity views:
   ├── report.py         # CLI text reporting
   ├── html_generator.py # Multi-resolution HTML dashboard builder
   ├── templates/        # HTML dashboard template
-  ├── nettally          # CLI wrapper (symlinked onto PATH as `nettally` for reinstall/repair)
-  ├── install.sh        # Re-runnable installer (`nettally install`)
-  └── uninstall.sh      # (`nettally uninstall`)
+  ├── nettally          # CLI wrapper (symlinked onto PATH as `nettally`)
+  ├── install.sh        # Installer — re-run this from the source tree to upgrade
+  └── uninstall.sh      # `nettally uninstall`
 
 ~/Library/LaunchAgents/
   └── com.nettally.daemon.plist

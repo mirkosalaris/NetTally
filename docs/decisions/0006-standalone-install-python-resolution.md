@@ -1,6 +1,6 @@
 # 0006 — Application Support is a true standalone install; Python is resolved once at install time
 
-Date: 2026-09-23
+Date: 2026-09-23 (revised 2026-09-25)
 
 ## Context
 
@@ -26,8 +26,8 @@ time:
   template. `install.sh` symlinks `nettally` onto PATH via `~/.local/bin` (created, and added
   to the shell profile's `$PATH` if needed, when it or `~/bin` is not already on PATH); the
   wrapper resolves symlinks first, so `report`/`html`/`run-once` run the deployed copies. Deleting the source folder
-  afterwards is fine, and `nettally install` from the deployed copy acts as a repair/
-  reconfigure command.
+  afterwards is fine; upgrading the code from then on means fetching a new source tree and re-running its
+  `./install.sh`, since the deployed copy is the runtime, not an upgrade path.
 - Python is resolved once, at install time. `install.sh` takes the first `python3` on PATH
   (guarding `/usr/bin/python3` with `xcode-select -p` before running it, so the CLT dialog
   never appears), requires `3.9 <= version < 4.0`, fails fast with a friendly message, writes
