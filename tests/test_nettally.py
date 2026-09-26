@@ -7,7 +7,12 @@ import datetime
 import io
 import json
 import os
+import pty
+import shutil
+import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -551,6 +556,144 @@ class TestDatabaseAndDeltas(unittest.TestCase):
         # Sum of all values in the sleep layer should be zero because it was excluded
         total = sum(sum(ds["data"]) for ds in sleep_layer)
         self.assertEqual(total, 0)
+
+
+class TestInstallerUserFileHandling(unittest.TestCase):
+    """install.sh must never silently clobber a hand-edited config.json/app_map.json."""
+
+    REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    REPO_CONFIG = '{"polling_interval_seconds": 30}\n'
+    USER_CONFIG = '{"polling_interval_seconds": 60}\n'
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.src = os.path.join(self.tmp, "repo_config.json")
+        self.dst = os.path.join(self.tmp, "deployed_config.json")
+        with open(self.src, "w", encoding="utf-8") as f:
+            f.write(self.REPO_CONFIG)
+
+    @staticmethod
+    def _install_sh_function():
+        """Extract install_user_file() from install.sh so the test can't drift from it."""
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "install.sh"
+        )
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        start = text.index("install_user_file() {")
+        end = text.index("\n}\n", start) + len("\n}\n")
+        return text[start:end]
+
+    def _run(self, answer=None, dst_content=None, use_tty=False):
+        """Run the function in a bash subshell under `set -e`; echo a sentinel afterwards.
+
+        The sentinel is what proves `set -e` did not abort the run mid-function. For the
+        interactive cases a pty is used so `[ -t 0 ]` is genuinely true; the reply is
+        written from a thread because the child blocks on `read` until it arrives.
+        """
+        if dst_content is not None:
+            with open(self.dst, "w", encoding="utf-8") as f:
+                f.write(dst_content)
+        script = (
+            f"{self._install_sh_function()}\n"
+            f'install_user_file "{self.src}" "{self.dst}" "config.json"\n'
+            "echo __DONE__\n"
+        )
+        if not use_tty:
+            proc = subprocess.run(
+                ["/bin/bash", "-c", script],
+                input=(answer or "").encode(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=20,
+            )
+        else:
+            master, slave = pty.openpty()
+
+            def reply_when_prompted():
+                # Let the child reach `read`, then answer -- or, for the EOF case,
+                # close the master so the pending read fails instead of blocking.
+                time.sleep(0.2)
+                if answer:
+                    os.write(master, answer.encode())
+                else:
+                    os.close(master)
+
+            feeder = threading.Thread(target=reply_when_prompted)
+            feeder.start()
+            try:
+                proc = subprocess.run(
+                    ["/bin/bash", "-c", script],
+                    stdin=slave,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    timeout=20,
+                )
+            finally:
+                feeder.join()
+                for fd in (master, slave):
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+        return proc.stdout.decode().replace("\r\n", "\n")
+
+    def _backups(self):
+        return [n for n in os.listdir(self.tmp) if ".bak-" in n]
+
+    def _read(self, path):
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+
+    def test_missing_destination_is_seeded_from_repo(self):
+        out = self._run()
+        self.assertEqual(self._read(self.dst), self.REPO_CONFIG)
+        self.assertEqual(self._backups(), [])
+        self.assertIn("__DONE__", out)
+
+    def test_identical_file_is_left_alone(self):
+        out = self._run(dst_content=self.REPO_CONFIG)
+        self.assertEqual(self._read(self.dst), self.REPO_CONFIG)
+        self.assertEqual(self._backups(), [])
+        self.assertIn("already matches", out)
+        self.assertIn("__DONE__", out)
+
+    def test_prompt_keeps_user_file_on_no(self):
+        out = self._run(answer="n\n", dst_content=self.USER_CONFIG, use_tty=True)
+        self.assertEqual(self._read(self.dst), self.USER_CONFIG)
+        self.assertEqual(self._backups(), [])
+        self.assertIn("Keeping your", out)
+        self.assertIn("__DONE__", out)
+
+    def test_prompt_defaults_to_keeping_on_empty_answer(self):
+        out = self._run(answer="\n", dst_content=self.USER_CONFIG, use_tty=True)
+        self.assertEqual(self._read(self.dst), self.USER_CONFIG)
+        self.assertEqual(self._backups(), [])
+        self.assertIn("__DONE__", out)
+
+    def test_prompt_replaces_and_backs_up_on_yes(self):
+        out = self._run(answer="y\n", dst_content=self.USER_CONFIG, use_tty=True)
+        self.assertEqual(self._read(self.dst), self.REPO_CONFIG)
+        backups = self._backups()
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(self._read(os.path.join(self.tmp, backups[0])), self.USER_CONFIG)
+        self.assertIn("Backed up", out)
+        self.assertIn("__DONE__", out)
+
+    def test_eof_at_prompt_keeps_file_without_aborting(self):
+        """A closed stdin must not trip `set -e` on read's non-zero return."""
+        out = self._run(dst_content=self.USER_CONFIG, use_tty=True)
+        self.assertEqual(self._read(self.dst), self.USER_CONFIG)
+        self.assertEqual(self._backups(), [])
+        self.assertIn("__DONE__", out)
+
+    def test_piped_stdin_keeps_file_and_explains_how_to_replace(self):
+        out = self._run(answer="y\n", dst_content=self.USER_CONFIG)
+        self.assertEqual(self._read(self.dst), self.USER_CONFIG)
+        self.assertEqual(self._backups(), [])
+        self.assertIn("No terminal attached", out)
+        self.assertIn("__DONE__", out)
 
 
 if __name__ == "__main__":

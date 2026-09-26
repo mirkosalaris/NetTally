@@ -57,6 +57,56 @@ mkdir -p "$APP_DIR"
 mkdir -p "$LOG_DIR"
 mkdir -p "$LAUNCH_AGENTS_DIR"
 
+# install_user_file <repo copy> <deployed path> <label>
+#
+# config.json and app_map.json are meant to be edited in place, so a re-install
+# must never silently clobber them. When the repo's copy has drifted from the
+# deployed one, ask what to do: the default answer keeps the user's file, and
+# replacing always leaves a timestamped backup beside it. With no terminal
+# attached (a piped or scripted run) the user's file is kept and the
+# non-interactive route to the repo version is printed instead.
+install_user_file() {
+    local src="$1"
+    local dst="$2"
+    local label="$3"
+    local reply backup
+
+    if [ ! -f "$dst" ]; then
+        cp "$src" "$dst"
+        echo "  Installed the repo's $label."
+        return 0
+    fi
+
+    if cmp -s "$src" "$dst"; then
+        echo "  $label already matches the repo copy; leaving it alone."
+        return 0
+    fi
+
+    echo "  $label in Application Support differs from the repo copy"
+    echo "  (compare with: diff \"$src\" \"$dst\")."
+    if [ -t 0 ]; then
+        printf '  Replace your $label with the repo copy? [y/N] '
+        read -r reply || reply=""
+    else
+        echo "  No terminal attached, so keeping your $label."
+        echo "  To take the repo copy instead: rm \"$dst\" and re-run ./install.sh."
+        return 0
+    fi
+
+    case "$reply" in
+        y | Y | yes | YES | Yes)
+            backup="${dst}.bak-$(date +%Y%m%d-%H%M%S)"
+            cp "$dst" "$backup"
+            echo "  Backed up your $label to $backup"
+            cp "$src" "$dst"
+            echo "  Installed the repo's $label."
+            ;;
+        *)
+            echo "  Keeping your $label."
+            ;;
+    esac
+}
+
 # 2. Copy application files. Application Support now holds a fully standalone
 #    runtime: the daemon runs collector.py from here, the `nettally` CLI on PATH
 #    runs from here, and report/html read templates from here. See
@@ -75,16 +125,8 @@ cp "$SCRIPT_DIR/com.nettally.daemon.plist" "$APP_DIR/"
 mkdir -p "$APP_DIR/templates"
 cp "$SCRIPT_DIR/templates/dashboard_template.html" "$APP_DIR/templates/"
 chmod +x "$APP_DIR/nettally" "$APP_DIR/install.sh" "$APP_DIR/uninstall.sh"
-if [ ! -f "$APP_DIR/app_map.json" ]; then
-    cp "$SCRIPT_DIR/app_map.json" "$APP_DIR/"
-else
-    echo "Existing app_map.json found in Application Support; keeping user customizations."
-fi
-if [ ! -f "$APP_DIR/config.json" ]; then
-    cp "$SCRIPT_DIR/config.json" "$APP_DIR/"
-else
-    echo "Existing config.json found in Application Support; keeping user customizations."
-fi
+install_user_file "$SCRIPT_DIR/app_map.json" "$APP_DIR/app_map.json" "app_map.json"
+install_user_file "$SCRIPT_DIR/config.json" "$APP_DIR/config.json" "config.json"
 
 # 3. Record the resolved interpreter for the CLI wrapper and the plist.
 printf '%s\n' "$PYTHON" > "$APP_DIR/python_path"
