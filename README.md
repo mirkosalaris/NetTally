@@ -50,6 +50,42 @@ or Homebrew Python upgrade — it re-copies the code, re-pins the Python interpr
 regenerates the LaunchAgent plist. The source tree is the only place this can be run from:
 the copy in Application Support is the runtime, not an upgrade path.
 
+#### Configuration files
+
+`config.json` and `app_map.json` are yours to edit, and `install.sh` will not overwrite
+them silently. On a re-install each one is compared against the repo copy, and if it has
+diverged you are asked whether to replace it — answering yes first writes a timestamped
+`config.json.bak-YYYYMMDD-HHMMSS` (or `app_map.json.bak-…`) beside it, so nothing is lost.
+Answering no, or hitting enter, keeps your file. When there is no terminal attached
+(you pipe the output, or run it from a script) your file is kept and the installer prints
+the non-interactive route instead: `rm` the file and re-run `./install.sh`, which then seeds
+it from the repo.
+
+Where each file is read from at runtime:
+
+| File | Read from, in order | Notes |
+| --- | --- | --- |
+| `config.json` | `~/Library/Application Support/NetTally/config.json` | No fallback to the repo copy |
+| `app_map.json` | explicit `--config` → Application Support → the copy next to `app_folder.py` | The last is only a fallback for a missing Application Support file |
+
+Two consequences worth knowing before you edit:
+
+- **The repo copies are install-time seeds, except for `app_map.json`.** Editing
+  `config.json` in the source tree changes nothing until you re-run `./install.sh` and
+  accept the replacement. Editing `app_map.json` in the source tree *does* affect
+  `./nettally` run from that tree, but never the installed daemon, which reads
+  Application Support.
+- **New settings appear on their own; changed defaults do not.** `load_config()` merges
+  your file over the `DEFAULTS` dict in `config.py`, so a setting added by an upgrade takes
+  effect immediately. But if a setting is already present in your `config.json`, your value
+  wins forever — bumping the default in `config.py` will not change it. Re-run
+  `./install.sh` and accept the replacement to pick up new defaults, or edit the value in
+  Application Support by hand.
+
+Only `collector` accepts `--config`. `report` and `html` always read the Application
+Support `config.json`, so pointing the collector at an alternative file also means its
+`app_map.json` is the only other consumer of that flag.
+
 ### Status Check
 
 To check if the daemon is active and view recent logs:
