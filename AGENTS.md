@@ -21,21 +21,28 @@ itself is version-controlled and hosted on GitHub (origin), and commits are push
   (the LaunchAgent plist's `ProgramArguments` points at `collector.py` there).
 - Once installed, the `nettally` CLI on your PATH also runs from there: `install.sh` copies
   `collector.py`, `db.py`, `config.py`, `app_folder.py`, `report.py`, `html_generator.py`,
-  `templates/`, the `nettally` wrapper, `install.sh`/`uninstall.sh`, and the plist template
+  `templates/` (`dashboard_template.html`, the vendored `chart.umd.js`, and its license), the
+  `nettally` wrapper, `install.sh`/`uninstall.sh`, and the plist template
   into Application Support, and symlinks `nettally` onto your PATH (into `~/.local/bin`
   — created and added to `$PATH` in your shell profile if not already there). Deleting the
   source folder after install is fine. (See `docs/decisions/0006-...`; it resolves the open
   question in `0005`.)
+- `nettally install` on PATH resolves to the **deployed** copy of `install.sh`, where
+  `SCRIPT_DIR` is already `APP_DIR`, so its first `cp` copies each file onto itself and
+  `set -e` aborts the run. It is not an upgrade or repair path — only the source tree's
+  `./install.sh` is. Don't document it as one.
 - `./nettally ...` from **this workspace** is the development path: the wrapper resolves paths
   relative to its own (symlink-resolved) location, so it keeps running the workspace copies of
   `report.py` / `html_generator.py` / `collector.py` directly.
 - **Consequence: after editing any of `collector.py`, `db.py`, `config.py`, `app_folder.py`,
-  `report.py`, `html_generator.py`, or `templates/dashboard_template.html`, you must re-run
-  `./install.sh` for the deployed daemon **and** the PATH CLI to pick up the change.**
-  Restarting the LaunchAgent without re-running `install.sh` just relaunches the old copy.
-  The workspace `./nettally` sees edits immediately. Only the source tree can do this:
-  the Application Support copy is the runtime, so upgrading it means a fresh source tree
-  and a re-run of its `./install.sh`.
+  `report.py`, `html_generator.py`, `templates/dashboard_template.html`, or
+  `templates/chart.umd.js`, you must re-run `./install.sh` for the deployed daemon **and**
+  the PATH CLI to pick up the change.** Restarting the LaunchAgent without re-running
+  `install.sh` just relaunches the old copy. The workspace `./nettally` sees edits
+  immediately. Only the source tree can do this: the Application Support copy is the
+  runtime, so upgrading it means a fresh source tree and a re-run of its `./install.sh`.
+  (`templates/chart.umd.js` counts because `html_generator.py` inlines it into every
+  generated report; leaving it out of the install is not an option.)
 - The database (`usage.db`, default path `~/Library/Application Support/NetTally/usage.db`,
   overridable via `--db`) is a single shared file regardless of which copy of the code touched
   it — there's no duplicate-database confusion, only duplicate-*code* confusion.
@@ -53,6 +60,20 @@ itself is version-controlled and hosted on GitHub (origin), and commits are push
   usable Python is found, `install.sh` fails fast with a friendly message.
 - After a macOS or Homebrew Python change, re-run `./install.sh` to re-pin.
 
+## Logs
+
+- The collector owns its log: `setup_logging()` in `collector.py` attaches a
+  `RotatingFileHandler` for `~/Library/Logs/NetTally/collector.log` (5 MB, 3 backups). The
+  bounds live in `LOG_MAX_BYTES` / `LOG_BACKUP_COUNT` in `collector.py` — change them there,
+  not in the plist.
+- The plist intentionally keeps `StandardErrorPath` (`collector.err.log`) and has no
+  `StandardOutPath`. stderr is the only place a failure *before* logging is configured can
+  surface (import error, bad interpreter, unwritable log dir), and it's normally empty. The
+  daemon writes nothing to stdout; the only `print` in `collector.py` is behind
+  `if args.once:`, which runs attached to a terminal.
+- `nettally status` tails `collector.log` and only shows `collector.err.log` when it is
+  non-empty.
+
 ## Architecture at a glance
 
 ```
@@ -60,6 +81,12 @@ nettop (30s poll) → collector.py → usage_5m (SQLite, 5-min buckets, per app)
                                   ↳ power_events / gaps (pmset -g log derived, for sleep/wake classification)
 report.py / html_generator.py → read usage_5m via db.py's query_usage_by_{5m,hour,day} → CLI / HTML dashboard
 ```
+
+- `gaps` and `power_events` are **write-only** — the collector inserts into them, and nothing
+  ever reads them back (the classification result lands in `usage_5m.gap_classification`
+  instead). They're an audit trail of the `pmset -g log` parsing, kept for when you need to
+  explain *why* a bucket was classified as it was. Don't treat them as a report input, and
+  don't assume a change to them affects any query.
 
 - `usage_5m` PK is `(timestamp_5m, app_name)`. A bucket can receive several polls before it
   rolls over; `record_usage_deltas()` does `gap_classification = excluded.gap_classification`
@@ -84,7 +111,7 @@ report.py / html_generator.py → read usage_5m via db.py's query_usage_by_{5m,h
    zero test coverage until they were found manually; don't assume "tests pass" means "no
    regression" if you touched `html_generator.py`'s embedded JS.
 2. Run `make lint` (ruff) and `make typecheck` (mypy; config in `pyproject.toml`), and run
-   `make format` before you commit so the diff stays annular-format-clean. If your change
+   `make format` before you commit so the diff stays ruff-format-clean. If your change
    produces a lint/type finding you're confident is a false positive, say so explicitly instead
    of silently growing `ignore` lists or adding `# type: ignore` (both are kept minimal
    deliberately).
