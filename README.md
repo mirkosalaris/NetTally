@@ -218,20 +218,19 @@ CREATE TABLE usage_5m (
 );
 
 CREATE TABLE process_state (
-    pid          INTEGER NOT NULL,
-    name         TEXT NOT NULL,
-    bytes_in     INTEGER NOT NULL,
-    bytes_out    INTEGER NOT NULL,
-    last_seen    REAL NOT NULL,   -- epoch seconds of the last poll
-    PRIMARY KEY (pid, name)
+    pid             INTEGER NOT NULL,
+    process_name    TEXT NOT NULL,
+    last_bytes_in   INTEGER NOT NULL,   -- cumulative counter at the last poll
+    last_bytes_out  INTEGER NOT NULL,
+    last_seen_epoch REAL NOT NULL,      -- epoch seconds of the last poll
+    PRIMARY KEY (pid, process_name)
 );
 
 CREATE TABLE power_events (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    epoch      REAL NOT NULL,     -- event timestamp, epoch seconds
+    ts_epoch   REAL NOT NULL,     -- event timestamp, epoch seconds
     event_type TEXT NOT NULL,     -- 'Sleep' | 'Wake' | 'DarkWake'
-    reason     TEXT,
-    UNIQUE (epoch, event_type, reason)
+    reason_raw TEXT,              -- raw pmset reason string, when the log gave one
+    PRIMARY KEY (ts_epoch, event_type)
 );
 
 CREATE TABLE gaps (
@@ -246,7 +245,16 @@ CREATE TABLE gaps (
 traffic; `'dark_wake_only'`, `'sleep_then_full_wake'`, and `'unknown_gap'` mark buckets
 written by the poll immediately after a sleep/dark-wake gap. Reports can filter those
 classes out with `--exclude`; `'unknown_gap'` is counted as awake everywhere it's
-aggregated.
+aggregated. Databases created before gap classification existed get the column added by
+an `ALTER TABLE ... ADD COLUMN gap_classification TEXT` on startup, so no migration step
+is needed.
+
+`process_state` is a scratch table: it holds the last cumulative byte counter seen per
+process so the next poll can compute a delta, and stale rows are pruned on a timer
+(`process_state_prune_interval_seconds` / `process_state_max_age_seconds` in
+`config.json`). `power_events` and `gaps` are append-only audit trails of the `pmset -g
+log` parsing; nothing currently reads them back, so you can safely delete those two
+tables' rows without affecting any report.
 
 ### How Data Collection Works
 
