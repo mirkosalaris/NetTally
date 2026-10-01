@@ -58,6 +58,30 @@
             margin-top: 4px;
         }
 
+        .coverage-banner {
+            display: flex;
+            align-items: baseline;
+            gap: 10px;
+            flex-wrap: wrap;
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-left: 3px solid var(--accent-color);
+            border-radius: 12px;
+            padding: 12px 18px;
+            margin-bottom: 24px;
+            font-size: 0.9rem;
+            color: var(--text-primary);
+        }
+
+        .coverage-banner .coverage-label {
+            color: var(--text-secondary);
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            white-space: nowrap;
+        }
+
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
@@ -289,11 +313,16 @@
         <div class="subtitle">Generated on __GENERATED_TIME__</div>
     </header>
 
+    <div class="coverage-banner">
+        <span class="coverage-label">Data available</span>
+        <span>__COVERAGE_SUMMARY__</span>
+    </div>
+
     <div class="stats-grid">
         <div class="stat-card">
             <div class="stat-title">Total Transfer</div>
             <div class="stat-value">__TOTAL_TRANSFER__</div>
-            <div class="stat-detail">Last __DAYS__ Days</div>
+            <div class="stat-detail">__WINDOW_DETAIL__</div>
         </div>
         <div class="stat-card">
             <div class="stat-title">Total Received</div>
@@ -317,9 +346,9 @@
             <div class="chart-title">Transfer Timeline Breakdown</div>
             <div class="chart-controls" style="flex-wrap: wrap; gap: 12px;">
                 <div class="date-filter">
-                    <input type="datetime-local" id="startDate">
+                    <input type="datetime-local" id="startDate" min="__COVERAGE_FIRST__" max="__COVERAGE_LAST__">
                     <span style="color: var(--text-secondary);">to</span>
-                    <input type="datetime-local" id="endDate">
+                    <input type="datetime-local" id="endDate" min="__COVERAGE_FIRST__" max="__COVERAGE_LAST__">
                     <button onclick="applyFilter()">Apply</button>
                     <button onclick="resetFilter()">Reset</button>
                 </div>
@@ -370,6 +399,10 @@
     <script>
         const viewsData = __VIEWS_DATA_JSON__;
         const initiallyExcluded = __CLS_INITIALLY_EXCLUDED__;
+
+        // Bucket width in seconds per granularity, used to snap the date-range
+        // selection onto the axis the active view actually has.
+        const GRANULARITY_STEPS = { '5m': 300, 'hourly': 3600, 'daily': 86400 };
 
         const ctx = document.getElementById('usageChart').getContext('2d');
 
@@ -524,20 +557,71 @@
         };
 
         function initDateInputs() {
-            const labels = viewsData[currentGranularity]?.labels;
-            if (labels && labels.length > 0) {
-                document.getElementById('startDate').value = formatForInput(labels[0]);
-                document.getElementById('endDate').value   = formatForInput(labels[labels.length - 1]);
-            }
+            const bounds = coverageBounds();
+            if (bounds.first === null || bounds.last === null) return;
+            document.getElementById('startDate').value = naiveMsToInputValue(bounds.first);
+            document.getElementById('endDate').value   = naiveMsToInputValue(bounds.last);
         }
 
-        function formatForInput(labelStr) {
-            if (labelStr.length === 10) return labelStr + 'T00:00';
-            return labelStr.replace(' ', 'T');
+        // ── Naive wall-clock arithmetic ───────────────────────────────────────
+        // Bucket labels are naive local strings ('YYYY-MM-DD HH:MM'), exactly
+        // what the collector writes. They are parsed and formatted through the
+        // UTC accessors so all stepping happens on a *naive* timeline: real
+        // Date arithmetic would duplicate or skip a bucket across a DST
+        // transition, and the database has no such duplicates.
+        function labelToNaiveMs(label) {
+            if (!label) return null;
+            const norm = label.length === 10 ? label + ' 00:00' : label;
+            const ms = Date.parse(norm.replace(' ', 'T') + ':00Z');
+            return isNaN(ms) ? null : ms;
+        }
+
+        function naiveMsToInputValue(ms) {
+            const d = new Date(ms);
+            const pad = n => String(n).padStart(2, '0');
+            return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate()) +
+                   'T' + pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes());
+        }
+
+        // The only ranges that can ever select data are the ones the generator
+        // measured, so they are read straight off the inputs' min/max.
+        function coverageBounds() {
+            const startEl = document.getElementById('startDate');
+            const endEl   = document.getElementById('endDate');
+            return {
+                first: labelToNaiveMs(startEl.min),
+                last:  labelToNaiveMs(endEl.max)
+            };
+        }
+
+        // Snap the selection onto the current granularity's bucket grid and
+        // clamp it into the covered range, so a filter can never silently
+        // select buckets that were never recorded.
+        function clampRange() {
+            const startEl = document.getElementById('startDate');
+            const endEl   = document.getElementById('endDate');
+            const bounds  = coverageBounds();
+            if (bounds.first === null || bounds.last === null) return;
+
+            const step = GRANULARITY_STEPS[currentGranularity] || 300;
+            let start = labelToNaiveMs(startEl.value);
+            let end   = labelToNaiveMs(endEl.value);
+            if (start === null) start = bounds.first;
+            if (end === null)   end   = bounds.last;
+            start = Math.floor(start / step) * step;
+            end   = Math.ceil(end / step) * step;
+            if (start > end) { const swap = start; start = end; end = swap; }
+            start = Math.min(Math.max(start, bounds.first), bounds.last);
+            end   = Math.min(Math.max(end, bounds.first), bounds.last);
+            if (start > end) start = end;
+
+            startEl.value = naiveMsToInputValue(start);
+            endEl.value   = naiveMsToInputValue(end);
         }
 
         // ── Unified filter: date-range ∩ classification ───────────────────────
         function applyFilter() {
+            clampRange();
             const startVal = document.getElementById('startDate').value;
             const endVal   = document.getElementById('endDate').value;
             const checkedCls = getCheckedClassifications();

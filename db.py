@@ -270,6 +270,38 @@ def query_usage_totals(
         conn.close()
 
 
+def query_usage_coverage(db_path: str, days: Optional[int] = None) -> dict:
+    """Return what the database actually holds inside the report window.
+
+    Keys: first_bucket, last_bucket (naive 'YYYY-MM-DD HH:MM' strings or None
+    when there is no data), bucket_count, day_count. Deliberately *not*
+    classification-filtered: coverage answers "was anything recorded here",
+    which is independent of which gap classes the caller wants to look at.
+    """
+    conn = get_connection(db_path)
+    try:
+        sql = """
+            SELECT MIN(timestamp_5m) as first_bucket,
+                   MAX(timestamp_5m) as last_bucket,
+                   COUNT(DISTINCT timestamp_5m) as bucket_count,
+                   COUNT(DISTINCT day) as day_count
+            FROM usage_5m
+        """
+        params: list[object] = []
+        if days is not None:
+            sql += " WHERE day >= date('now', 'localtime', '-' || ? || ' days')"
+            params.append(days)
+        row = conn.execute(sql, params).fetchone()
+        return {
+            "first_bucket": row["first_bucket"],
+            "last_bucket": row["last_bucket"],
+            "bucket_count": row["bucket_count"] or 0,
+            "day_count": row["day_count"] or 0,
+        }
+    finally:
+        conn.close()
+
+
 def query_usage_by_day(
     db_path: str,
     days: Optional[int] = None,

@@ -20,6 +20,7 @@ from db import (
     query_usage_by_5m,
     query_usage_by_day,
     query_usage_by_hour,
+    query_usage_coverage,
     query_usage_totals,
 )
 from report import format_bytes, parse_exclude_classes
@@ -51,6 +52,31 @@ def _load_chartjs() -> str:
 
 HTML_TEMPLATE = _load_template()
 CHART_JS = _load_chartjs()
+
+
+def build_coverage_summary(coverage: dict, days: Optional[int]) -> str:
+    """Describe, in the report's own voice, the time range the data actually covers.
+
+    `days` is the requested window; coverage comes from the database and can be
+    much narrower (a machine that was off for a week records nothing), so the
+    two are reported separately instead of implying the window is fully covered.
+    """
+    window = f"the last {days} days" if days is not None else "all recorded history"
+    first = coverage.get("first_bucket")
+    last = coverage.get("last_bucket")
+    if not first or not last:
+        return f"No usage data recorded in {window} — start the collector to populate this report."
+
+    days_with_data = coverage.get("day_count", 0)
+    buckets = coverage.get("bucket_count", 0)
+    parts = [
+        f"{first} → {last}",
+        f"{days_with_data} {'day' if days_with_data == 1 else 'days'} with data",
+        f"{buckets:,} recorded 5-min buckets",
+    ]
+    if days is not None and days_with_data < days:
+        parts.append(f"report window: {window}")
+    return " · ".join(parts)
 
 
 def build_view_dataset(
@@ -119,6 +145,7 @@ def generate_html_report(
     records_5m = query_usage_by_5m(
         db_path, days=days, exclude_classifications=exclude_classifications
     )
+    coverage = query_usage_coverage(db_path, days=days)
 
     grand_in = sum(r["total_bytes_in"] or 0 for r in totals)
     grand_out = sum(r["total_bytes_out"] or 0 for r in totals)
@@ -255,13 +282,28 @@ def generate_html_report(
     # The full viewsData is still embedded so the user can toggle them back on.
     cls_initially_excluded = exclude_classifications or []
 
+    # The date filter can only ever select buckets that exist, so the inputs are
+    # bounded by the data's own extent rather than by "now".
+    coverage_first = coverage.get("first_bucket") or ""
+    coverage_last = coverage.get("last_bucket") or ""
+    days_with_data = coverage.get("day_count", 0)
+    if days is None:
+        window_detail = f"All recorded history · {days_with_data} days with data"
+    else:
+        window_detail = f"Last {days} days · {days_with_data} days with data"
+
     html_content = HTML_TEMPLATE.replace("__CHART_JS__", CHART_JS)
     html_content = html_content.replace("__GENERATED_TIME__", now_str)
+    html_content = html_content.replace(
+        "__COVERAGE_SUMMARY__", build_coverage_summary(coverage, days)
+    )
+    html_content = html_content.replace("__COVERAGE_FIRST__", coverage_first)
+    html_content = html_content.replace("__COVERAGE_LAST__", coverage_last)
+    html_content = html_content.replace("__WINDOW_DETAIL__", window_detail)
     html_content = html_content.replace("__TOTAL_TRANSFER__", format_bytes(grand_total))
     html_content = html_content.replace("__TOTAL_IN__", format_bytes(grand_in))
     html_content = html_content.replace("__TOTAL_OUT__", format_bytes(grand_out))
     html_content = html_content.replace("__ACTIVE_APPS__", str(len(totals)))
-    html_content = html_content.replace("__DAYS__", str(days))
     html_content = html_content.replace("__TABLE_ROWS__", table_html)
     html_content = html_content.replace("__VIEWS_DATA_JSON__", json.dumps(views_data))
     html_content = html_content.replace(

@@ -32,12 +32,26 @@ from db import (
     query_usage_by_5m,
     query_usage_by_day,
     query_usage_by_hour,
+    query_usage_coverage,
     query_usage_totals,
     record_usage_deltas,
     update_process_states,
 )
-from html_generator import generate_html_report
+from html_generator import build_coverage_summary, generate_html_report
 from report import generate_totals_report, parse_exclude_classes
+
+
+def extract_json_var(content: str, var_name: str):
+    """Pull a `const <var_name> = {...};` payload out of a generated dashboard."""
+    marker = f"const {var_name} = "
+    start = content.find(marker)
+    if start == -1:
+        raise AssertionError(f"{var_name} not found in generated HTML")
+    start += len(marker)
+    end = content.find(";\n", start)
+    if end == -1:
+        raise AssertionError(f"unterminated {var_name} payload in generated HTML")
+    return json.loads(content[start:end])
 
 
 class TestNettopProcIdParsing(unittest.TestCase):
@@ -352,6 +366,38 @@ class TestDatabaseAndDeltas(unittest.TestCase):
         days_found = set(r["day"] for r in app_a_records)
         self.assertEqual(days_found, {yesterday, today})
 
+    def test_usage_coverage_reports_the_recorded_extent(self):
+        # Coverage answers "was anything recorded here", so it must span the
+        # whole window regardless of which classification the rows carry.
+        today = datetime.date.today().isoformat()
+        older = (datetime.date.today() - datetime.timedelta(days=4)).isoformat()
+        record_usage_deltas(
+            self.db_path,
+            f"{older} 09:00",
+            older,
+            {"AppA": (10, 10)},
+            gap_classification="dark_wake_only",
+        )
+        record_usage_deltas(self.db_path, f"{today} 14:05", today, {"AppA": (20, 20)})
+
+        coverage = query_usage_coverage(self.db_path, days=30)
+        self.assertEqual(coverage["first_bucket"], f"{older} 09:00")
+        self.assertEqual(coverage["last_bucket"], f"{today} 14:05")
+        self.assertEqual(coverage["bucket_count"], 2)
+        self.assertEqual(coverage["day_count"], 2)
+
+        # A narrower window must not report buckets that fall outside it.
+        narrow = query_usage_coverage(self.db_path, days=1)
+        self.assertEqual(narrow["first_bucket"], f"{today} 14:05")
+        self.assertEqual(narrow["bucket_count"], 1)
+
+    def test_usage_coverage_on_an_empty_database(self):
+        coverage = query_usage_coverage(self.db_path, days=30)
+        self.assertIsNone(coverage["first_bucket"])
+        self.assertIsNone(coverage["last_bucket"])
+        self.assertEqual(coverage["bucket_count"], 0)
+        self.assertEqual(coverage["day_count"], 0)
+
     def test_empty_html_generation(self):
         # Dashboard must render without error and show an empty-state message
         # when no usage data exists yet (fresh install).
@@ -562,6 +608,104 @@ class TestDatabaseAndDeltas(unittest.TestCase):
         # Sum of all values in the sleep layer should be zero because it was excluded
         total = sum(sum(ds["data"]) for ds in sleep_layer)
         self.assertEqual(total, 0)
+
+
+class TestHtmlCoverageReporting(unittest.TestCase):
+    """The report must state what it covers and only offer ranges that exist."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.db_path = os.path.join(self.temp_dir.name, "coverage.db")
+        init_db(self.db_path)
+
+    def _generate(self, name="coverage.html", **kwargs):
+        out_html = os.path.join(self.temp_dir.name, name)
+        path = generate_html_report(self.db_path, days=30, output_path=out_html, **kwargs)
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+
+    def test_summary_reports_extent_and_shortfall(self):
+        summary = build_coverage_summary(
+            {
+                "first_bucket": "2026-09-08 18:15",
+                "last_bucket": "2026-10-01 22:40",
+                "bucket_count": 3214,
+                "day_count": 22,
+            },
+            30,
+        )
+        self.assertIn("2026-09-08 18:15", summary)
+        self.assertIn("2026-10-01 22:40", summary)
+        self.assertIn("22 days with data", summary)
+        self.assertIn("3,214 recorded 5-min buckets", summary)
+        # The requested window is wider than the data: say so rather than imply
+        # the whole 30 days are covered.
+        self.assertIn("report window: the last 30 days", summary)
+
+    def test_summary_for_a_fully_covered_window_omits_the_shortfall(self):
+        summary = build_coverage_summary(
+            {
+                "first_bucket": "2026-09-08 18:15",
+                "last_bucket": "2026-10-01 22:40",
+                "bucket_count": 10,
+                "day_count": 30,
+            },
+            30,
+        )
+        self.assertNotIn("report window", summary)
+        self.assertIn("30 days with data", summary)
+
+    def test_summary_without_data_says_so(self):
+        summary = build_coverage_summary(
+            {"first_bucket": None, "last_bucket": None, "bucket_count": 0, "day_count": 0}, 30
+        )
+        self.assertIn("No usage data recorded", summary)
+
+    def test_banner_reports_the_covered_range(self):
+        day_str = datetime.date.today().isoformat()
+        record_usage_deltas(self.db_path, f"{day_str} 09:05", day_str, {"AppA": (10, 5)})
+        record_usage_deltas(self.db_path, f"{day_str} 21:40", day_str, {"AppB": (10, 5)})
+
+        content = self._generate()
+        self.assertIn("Data available", content)
+        self.assertIn(f"{day_str} 09:05", content)
+        self.assertIn(f"{day_str} 21:40", content)
+        self.assertIn("1 day with data", content)
+        self.assertIn("2 recorded 5-min buckets", content)
+
+    def test_date_inputs_are_bounded_by_the_recorded_extent(self):
+        day_str = datetime.date.today().isoformat()
+        record_usage_deltas(self.db_path, f"{day_str} 09:05", day_str, {"AppA": (10, 5)})
+        record_usage_deltas(self.db_path, f"{day_str} 21:40", day_str, {"AppB": (10, 5)})
+
+        content = self._generate()
+        for field in ("startDate", "endDate"):
+            with self.subTest(field=field):
+                self.assertIn(f'id="{field}" min="{day_str} 09:05" max="{day_str} 21:40"', content)
+
+    def test_report_without_data_has_no_bounds_and_says_nothing_was_recorded(self):
+        content = self._generate("coverage_empty.html")
+        self.assertIn("No usage data recorded", content)
+        self.assertIn('id="startDate" min="" max=""', content)
+
+    def test_excluded_classes_do_not_shrink_the_reported_coverage(self):
+        # Coverage is about what was recorded, not about which classes the
+        # report is showing, so --exclude must not move the bounds.
+        day_str = datetime.date.today().isoformat()
+        record_usage_deltas(
+            self.db_path,
+            f"{day_str} 03:00",
+            day_str,
+            {"AppA": (10, 5)},
+            gap_classification="dark_wake_only",
+        )
+        record_usage_deltas(self.db_path, f"{day_str} 22:00", day_str, {"AppB": (10, 5)})
+
+        content = self._generate(
+            "coverage_excluded.html", exclude_classifications=["dark_wake_only"]
+        )
+        self.assertIn(f'id="startDate" min="{day_str} 03:00" max="{day_str} 22:00"', content)
 
 
 class TestInstallerUserFileHandling(unittest.TestCase):
