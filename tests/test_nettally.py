@@ -892,11 +892,36 @@ class TestHtmlTablePayload(unittest.TestCase):
         self.assertEqual(
             table["bucketClass"][1], chartjs_html_generator.CLASSIFICATION_INDEX["dark_wake_only"]
         )
+
         # The awake rows in that bucket stay in the payload. Dropping them here
         # would make the unfiltered totals disagree with the database; the filter
         # decides what to hide, so that the plot and the table always agree.
         app_a = table["series"][table["apps"].index("AppA")]
         self.assertEqual(sum(app_a["in"]), 300)
+
+    def test_axis_controls_are_present_and_wired(self):
+        # The scale switch and the empty-interval toggle are pure client-side
+        # behaviour, so all the generator has to guarantee is that the controls
+        # exist, default to the documented state, and call the handlers the
+        # dashboard defines. The behaviour itself is exercised by the browser
+        # checks in the dashboard, not from here.
+        _, _, content = self._payloads()
+
+        self.assertIn("onclick=\"setScale('logarithmic')\"", content)
+        self.assertIn("onclick=\"setScale('linear')\"", content)
+        self.assertIn(
+            'id="chk-empty" checked onchange="setShowEmptyIntervals(this.checked)"', content
+        )
+        self.assertIn("function setScale(", content)
+        self.assertIn("function setShowEmptyIntervals(", content)
+        self.assertIn("function applyChartScale(", content)
+        # Both axes stay stacked: an unstacked log chart would stop showing
+        # per-app shares of a bucket.
+        self.assertIn("stacked: true", content)
+        # The gaps control must not touch the summary or the table, which read the
+        # embedded axis rather than the plotted one.
+        self.assertIn("function dataAxis(", content)
+        self.assertIn("dataAxis('5m')", content)
 
     def test_every_app_in_the_window_gets_a_series(self):
         _, table, _ = self._payloads()

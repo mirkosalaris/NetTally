@@ -138,7 +138,7 @@
             font-weight: 600;
         }
 
-        .granularity-selector {
+        .segmented {
             display: flex;
             gap: 8px;
             background: #0f172a;
@@ -147,7 +147,7 @@
             border: 1px solid var(--card-border);
         }
 
-        .btn-granularity {
+        .seg-btn {
             background: transparent;
             border: none;
             color: var(--text-secondary);
@@ -159,7 +159,7 @@
             transition: all 0.2s ease;
         }
 
-        .btn-granularity.active {
+        .seg-btn.active {
             background: var(--accent-color);
             color: #0f172a;
         }
@@ -413,11 +413,19 @@
         <div class="chart-header" style="flex-wrap: wrap; gap: 12px;">
             <div class="chart-title">Transfer Timeline Breakdown</div>
             <div class="chart-controls" style="flex-wrap: wrap; gap: 12px;">
-                <div class="granularity-selector">
-                    <button class="btn-granularity active" onclick="switchGranularity('5m', this)">5-Min</button>
-                    <button class="btn-granularity" onclick="switchGranularity('hourly', this)">Hourly</button>
-                    <button class="btn-granularity" onclick="switchGranularity('daily', this)">Daily</button>
+                <div class="segmented" id="granularitySelector">
+                    <button class="seg-btn active" onclick="switchGranularity('5m', this)">5-Min</button>
+                    <button class="seg-btn" onclick="switchGranularity('hourly', this)">Hourly</button>
+                    <button class="seg-btn" onclick="switchGranularity('daily', this)">Daily</button>
                 </div>
+                <div class="segmented" id="scaleSelector">
+                    <button class="seg-btn active" id="btnScaleLinear" onclick="setScale('linear')">Linear</button>
+                    <button class="seg-btn" id="btnScaleLog" onclick="setScale('logarithmic')">Log</button>
+                </div>
+                <label class="cls-filter-label">
+                    <input type="checkbox" id="chk-empty" checked onchange="setShowEmptyIntervals(this.checked)">
+                    Show empty intervals
+                </label>
             </div>
         </div>
         <div style="height: 380px; position: relative;">
@@ -470,6 +478,8 @@
         // different slices of the data.
         const state = {
             granularity: '5m',
+            scale: 'linear',       // 'linear' or 'logarithmic' on the y axis
+            showEmptyIntervals: true,
             start: null,          // naive ms; null means "everything covered"
             end: null,
             search: '',
@@ -587,6 +597,9 @@
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
+                // So switching scale or revealing the empty intervals reads as one
+                // bar field moving, not as the chart being redrawn underneath you.
+                animation: { duration: 400, easing: 'easeInOutCubic' },
                 scales: {
                     x: {
                         stacked: true,
@@ -668,6 +681,12 @@
             return naiveMsToInputValue(ms).replace('T', ' ');
         }
 
+        // Day labels carry no time part, which is what the daily axis and the
+        // materialized gaps on it have to look like.
+        function naiveMsToDate(ms) {
+            return naiveMsToInputValue(ms).slice(0, 10);
+        }
+
         // The only ranges that can ever select data are the ones the generator
         // measured, so they are read straight off the inputs' min/max.
         function coverageBounds() {
@@ -742,22 +761,71 @@
             return state.start === null || inRange(periodStartFor(ms));
         }
 
-        // The labels the active view plots, in order. Kept separate from the
-        // embedded axis so the empty-interval control can add buckets that were
-        // never recorded without touching the embedded data.
-        function activeAxisLabels(viewKey) {
-            const view = viewsData[viewKey];
-            return (view && view.labels) || [];
+        // ── Two axes per view ──────────────────────────────────────────────────
+        //
+        // dataAxis() is the axis exactly as embedded: the buckets that were
+        // actually recorded, indexed by position. Table indices and the summary's
+        // selection mask are positions on this axis, so nothing that re-aggregates
+        // the payload may look at the chart axis below -- inserting a bucket there
+        // would shift every index by one and quietly corrupt the totals.
+        //
+        // chartAxis() is what gets plotted, and optionally includes the missing
+        // buckets in between. The payload carries no rows for a bucket the
+        // collector never wrote (machine off, laptop closed), so on a label axis
+        // built only from recorded buckets a bar chart compresses that time out of
+        // existence: 30 days of data with a week of sleep in it draws as a week
+        // of solid bars with the gaps nowhere to be seen. Materializing the gaps
+        // as zero-height buckets keeps the axis telling the truth about elapsed
+        // time. It's bounded by the report window, not by the data, so it cannot
+        // run away on a sparse database.
+        //
+        // A gap is unclassified: no rows means no classification, and the
+        // traffic-type filter does not apply to the absence of traffic. Which
+        // buckets are gaps is a fact about the database; whether to draw them is
+        // the empty-interval control's decision alone.
+        const dataAxisCache = {};
+        function dataAxis(viewKey) {
+            if (!dataAxisCache[viewKey]) {
+                const view = viewsData[viewKey];
+                const labels = (view && view.labels) || [];
+                dataAxisCache[viewKey] = { labels: labels, ms: labels.map(labelToNaiveMs) };
+            }
+            return dataAxisCache[viewKey];
         }
 
-        // Naive ms per axis label. The embedded labels never change, so this is
-        // computed once per view and reused on every render.
-        const axisMsCache = {};
-        function axisNaiveMs(viewKey) {
-            if (!axisMsCache[viewKey]) {
-                axisMsCache[viewKey] = activeAxisLabels(viewKey).map(labelToNaiveMs);
+        const chartAxisCache = {};
+        function chartAxis(viewKey) {
+            const key = viewKey + (state.showEmptyIntervals ? ':with-gaps' : ':recorded');
+            if (chartAxisCache[key]) return chartAxisCache[key];
+
+            const recordedMs = dataAxis(viewKey).ms;
+            const recorded = dataAxis(viewKey).labels;
+            const labels = [];
+            // Position on the embedded axis, or -1 for a materialized gap.
+            const source = [];
+
+            if (!state.showEmptyIntervals) {
+                recorded.forEach((label, i) => { labels.push(label); source.push(i); });
+            } else {
+                const step = (GRANULARITY_STEPS[viewKey] || 300) * 1000;
+                recorded.forEach((label, i) => {
+                    if (i > 0) {
+                        for (let at = recordedMs[i - 1] + step; at < recordedMs[i]; at += step) {
+                            labels.push(viewKey === 'daily' ? naiveMsToDate(at) : naiveMsToLabel(at));
+                            source.push(-1);
+                        }
+                    }
+                    labels.push(label);
+                    source.push(i);
+                });
             }
-            return axisMsCache[viewKey];
+
+            chartAxisCache[key] = {
+                labels: labels,
+                source: source,
+                ms: labels.map(labelToNaiveMs)
+            };
+            return chartAxisCache[key];
         }
 
         // ── Unified filter: date-range ∩ classification, applied to
@@ -776,8 +844,10 @@
             if (!view) return;
 
             const checkedCls = getCheckedClassifications();
-            const labels = activeAxisLabels(viewKey);
-            const ms = axisNaiveMs(viewKey);
+            const axis = chartAxis(viewKey);
+            const labels = axis.labels;
+            const ms = axis.ms;
+            const source = axis.source;
 
             if (viewKey === '5m') {
                 const filteredLabels = [];
@@ -785,14 +855,30 @@
                 const filteredDatasets = view.datasets.map(ds => ({ ...ds, data: [] }));
 
                 for (let i = 0; i < labels.length; i++) {
-                    const cls = classKey(view.bucketClassification ? view.bucketClassification[i] : null);
+                    const at = source[i];
+                    if (at < 0) {
+                        // A materialized gap holds no bytes and no classification, so
+                        // the traffic-type filter has nothing to say about it: it is
+                        // the empty-interval control that decides whether it is drawn.
+                        // Selecting "post-wake catch-up bursts" alone and still seeing
+                        // the quiet hours around them is the whole point of asking to
+                        // see the empty intervals in the first place.
+                        if (!inRange(ms[i])) continue;
+                        filteredLabels.push(labels[i]);
+                        filteredCls.push(null);
+                        for (let j = 0; j < view.datasets.length; j++) {
+                            filteredDatasets[j].data.push(0);
+                        }
+                        continue;
+                    }
+                    const cls = classKey(view.bucketClassification ? view.bucketClassification[at] : null);
                     // Classification filter: per-row classification must be checked
                     if (!inRange(ms[i]) || !checkedCls.has(cls)) continue;
 
                     filteredLabels.push(labels[i]);
                     filteredCls.push(cls);
                     for (let j = 0; j < view.datasets.length; j++) {
-                        filteredDatasets[j].data.push(view.datasets[j].data[i]);
+                        filteredDatasets[j].data.push(at < 0 ? 0 : view.datasets[j].data[at]);
                     }
                 }
 
@@ -801,6 +887,7 @@
                     labels: filteredLabels,
                     datasets: coloredDatasets(currentClassifications, filteredDatasets)
                 };
+                applyChartScale();
                 currentChart.update();
                 return;
             }
@@ -842,12 +929,26 @@
             const filteredDatasets = combinedDatasets.map(ds => ({ ...ds, data: [] }));
             const filteredClassifications = [];
 
-            for (let i = 0; i < combinedLabels.length; i++) {
+            for (let i = 0; i < labels.length; i++) {
+                const at = source[i];
+                if (at < 0) {
+                    // Materialized gap: no recorded bytes, so zero-height bars and a
+                    // null (i.e. unclassified) bucket -- same rule as the 5m path, and
+                    // for the same reason: the traffic-type filter does not apply to
+                    // the absence of traffic.
+                    if (!inRange(ms[i])) continue;
+                    filteredLabels.push(labels[i]);
+                    filteredClassifications.push(new Array(combinedDatasets.length).fill(null));
+                    for (let j = 0; j < combinedDatasets.length; j++) {
+                        filteredDatasets[j].data.push(0);
+                    }
+                    continue;
+                }
                 if (!inRange(ms[i])) continue;
-                filteredLabels.push(combinedLabels[i]);
-                filteredClassifications.push(perDatasetClassifications[i]);
+                filteredLabels.push(combinedLabels[at]);
+                filteredClassifications.push(perDatasetClassifications[at]);
                 for (let j = 0; j < combinedDatasets.length; j++) {
-                    filteredDatasets[j].data.push(combinedDatasets[j].data[i] || 0);
+                    filteredDatasets[j].data.push(combinedDatasets[j].data[at] || 0);
                 }
             }
 
@@ -856,7 +957,45 @@
                 labels: filteredLabels,
                 datasets: coloredDatasets(filteredClassifications, filteredDatasets)
             };
+            applyChartScale();
             currentChart.update();
+        }
+
+        // ── Vertical axis scale ────────────────────────────────────────────────
+        // The bars stay stacked in both modes: a log axis that unstacked the series
+        // would no longer be showing per-app shares of a bucket, and a stacked bar
+        // whose total is what the axis positions is still a stacked bar -- only its
+        // segments read by ratio instead of by width.
+        function setScale(scale) {
+            state.scale = (scale === 'logarithmic') ? 'logarithmic' : 'linear';
+            const linear = state.scale === 'linear';
+            document.getElementById(linear ? 'btnScaleLinear' : 'btnScaleLog').classList.add('active');
+            document.getElementById(linear ? 'btnScaleLog' : 'btnScaleLinear').classList.remove('active');
+            renderChart();
+        }
+
+        // A logarithmic axis cannot contain zero, so the floor moves to one byte.
+        // Anything below that (and every zero byte) collapses onto the axis line,
+        // which is the honest reading of a log scale: "there was traffic, and it
+        // was tiny" rather than "there was traffic of a size you can't see".
+        function applyChartScale() {
+            const y = currentChart.options.scales.y;
+            if (state.scale === 'logarithmic') {
+                y.type = 'logarithmic';
+                y.min = 1;
+                y.beginAtZero = false;
+            } else {
+                y.type = 'linear';
+                y.min = 0;
+                y.beginAtZero = true;
+            }
+        }
+
+        // Gaps carry no data, so this is a pure axis change: the summary and the
+        // table read the embedded axis and must not move when it toggles.
+        function setShowEmptyIntervals(show) {
+            state.showEmptyIntervals = !!show;
+            renderChart();
         }
 
         // ── Table + summary aggregate ──────────────────────────────────────────
@@ -872,8 +1011,8 @@
         function aggregateRows() {
             if (!tableData || !tableData.apps) return [];
 
-            const fiveMinLabels = activeAxisLabels('5m');
-            const fiveMinMs = axisNaiveMs('5m');
+            const fiveMinLabels = dataAxis('5m').labels;
+            const fiveMinMs = dataAxis('5m').ms;
             const selected = new Uint8Array(fiveMinLabels.length);
             for (let i = 0; i < fiveMinLabels.length; i++) {
                 if (inRangeAsBucket(fiveMinMs[i])) selected[i] = 1;
@@ -999,7 +1138,9 @@
         }
 
         function switchGranularity(viewKey, btnElement) {
-            document.querySelectorAll('.btn-granularity').forEach(btn => btn.classList.remove('active'));
+            // Scoped to the granularity group: the scale selector uses the same
+            // button style and must keep its own active state.
+            document.querySelectorAll('#granularitySelector .seg-btn').forEach(btn => btn.classList.remove('active'));
             btnElement.classList.add('active');
             state.granularity = viewKey;
             if (viewsData[viewKey]) {
