@@ -18,8 +18,7 @@ from config import load_config
 from db import (
     get_db_path,
     query_usage_by_5m,
-    query_usage_by_day,
-    query_usage_by_hour,
+    query_usage_by_5m_layered,
     query_usage_coverage,
     query_usage_totals,
 )
@@ -54,6 +53,35 @@ HTML_TEMPLATE = _load_template()
 CHART_JS = _load_chartjs()
 
 
+CLASSIFICATIONS = ["awake", "dark_wake_only", "sleep_then_full_wake"]
+
+# gap_classification -> dense index used by the embedded payloads. NULL and
+# 'unknown_gap' both fold into 'awake', exactly as db.py's only_classification
+# branch and the dashboard's JS classKey() do.
+CLASSIFICATION_INDEX = {
+    None: 0,
+    "awake": 0,
+    "unknown_gap": 0,
+    "dark_wake_only": 1,
+    "sleep_then_full_wake": 2,
+}
+
+OTHER_APP_LABEL = "Other Apps"
+
+
+def bucket_label_to_input_value(label: Optional[str]) -> str:
+    """Render a stored bucket label as a datetime-local input value.
+
+    The database stores bucket labels as 'YYYY-MM-DD HH:MM', while
+    <input type="datetime-local"> only accepts 'YYYY-MM-DDTHH:MM'. Anything the
+    browser cannot parse is ignored rather than reported, so a mis-formatted
+    min/max leaves the input unbounded instead of constrained.
+    """
+    if not label:
+        return ""
+    return label[:16].replace(" ", "T")
+
+
 def build_coverage_summary(coverage: dict, days: Optional[int]) -> str:
     """Describe, in the report's own voice, the time range the data actually covers.
 
@@ -83,44 +111,56 @@ def build_view_dataset(
     records: list[dict], time_key_name: str, top_apps: list[str], colors: list[str]
 ) -> dict:
     """Build the 5m chart dataset (labels, per-app series, bucket classifications)."""
-    distinct_times = sorted(list(set(r[time_key_name] for r in records)))
+    distinct_times = sorted({r[time_key_name] for r in records})
 
-    # Build per-bucket classification map: use MAX(gap_classification) already computed
-    # by the SQL query. All rows for the same timestamp share the same classification,
-    # so the first non-None value wins. NULL/None → 'awake'.
+    # Index once instead of rescanning `records` per (app, timestamp): the
+    # report is O(apps x buckets) big on a month of data, and the per-pair
+    # rescan used to dominate generation time.
+    top_app_set = set(top_apps)
+    bytes_by_bucket_app: dict[tuple[str, str], int] = {}
+    other_by_bucket: dict[str, int] = {}
+    # Classification of each bucket: the most severe gap_classification present.
     bucket_cls_map: dict[str, str] = {}
     for r in records:
         t = r[time_key_name]
+        app = r["app_name"]
+        total = r["total_bytes"] or 0
+        key = (t, app)
+        bytes_by_bucket_app[key] = bytes_by_bucket_app.get(key, 0) + total
+        if top_app_set and app not in top_app_set:
+            other_by_bucket[t] = other_by_bucket.get(t, 0) + total
         cls = r.get("gap_classification")
-        if cls and t not in bucket_cls_map:
-            bucket_cls_map[t] = cls
+        if cls:
+            current = bucket_cls_map.get(t)
+            # A bucket can hold rows from more than one poll state: the collector
+            # classifies per poll and a bucket spans up to six of them. A bar is
+            # the whole bucket, so it takes the most severe class present -- the
+            # same ordering db.py's MAX() already applies within a bucket+app.
+            # Most-severe is the conservative direction: unchecking a class then
+            # hides every bucket containing any of its bytes, instead of leaving
+            # a wake burst inside a bar that still reads as "awake".
+            if current is None or CLASSIFICATION_INDEX.get(cls, 0) > CLASSIFICATION_INDEX.get(
+                current, 0
+            ):
+                bucket_cls_map[t] = cls
 
     bucket_classifications = [bucket_cls_map.get(t) or "awake" for t in distinct_times]
 
     datasets = []
-
     for idx, app in enumerate(top_apps):
-        color = colors[idx % len(colors)]
-        data = []
-        for t in distinct_times:
-            bytes_sum = sum(
-                r["total_bytes"] for r in records if r[time_key_name] == t and r["app_name"] == app
-            )
-            data.append(bytes_sum)
-        datasets.append({"label": app, "data": data, "backgroundColor": color})
+        datasets.append(
+            {
+                "label": app,
+                "data": [bytes_by_bucket_app.get((t, app), 0) for t in distinct_times],
+                "backgroundColor": colors[idx % len(colors)],
+            }
+        )
 
     if distinct_times and top_apps:
-        other_data = []
-        for t in distinct_times:
-            bytes_sum = sum(
-                r["total_bytes"]
-                for r in records
-                if r[time_key_name] == t and r["app_name"] not in top_apps
-            )
-            other_data.append(bytes_sum)
+        other_data = [other_by_bucket.get(t, 0) for t in distinct_times]
         if any(v > 0 for v in other_data):
             datasets.append(
-                {"label": "Other Apps", "data": other_data, "backgroundColor": colors[-1]}
+                {"label": OTHER_APP_LABEL, "data": other_data, "backgroundColor": colors[-1]}
             )
 
     return {
@@ -128,6 +168,143 @@ def build_view_dataset(
         "datasets": datasets,
         "bucketClassification": bucket_classifications,
     }
+
+
+def build_layered_view(
+    layered_rows: list[dict],
+    granularity: str,
+    top_apps: list[str],
+    colors: list[str],
+) -> dict:
+    """Build the hourly/daily chart view from the per-(bucket, app, class) rows.
+
+    Produces a master label axis plus one dataset list per classification, all
+    of them with the same series in the same order (including an "Other Apps"
+    series that is present, even all-zero, in every layer as soon as any layer
+    has one) -- the client-side combine step has no fallback and silently drops
+    data if the shapes disagree.
+    """
+    if granularity == "hourly":
+
+        def label_of(row: dict) -> str:
+            return row["timestamp_5m"][:13] + ":00"
+
+    else:
+
+        def label_of(row: dict) -> str:
+            return row["day"]
+
+    labels: set[str] = set()
+    # (classification index) -> (label, app) -> total bytes
+    layer_totals: list[dict[tuple[str, str], int]] = [{} for _ in CLASSIFICATIONS]
+    has_other_traffic = False
+
+    for r in layered_rows:
+        label = label_of(r)
+        labels.add(label)
+        cls_idx = CLASSIFICATION_INDEX.get(r.get("gap_classification"), 0)
+        app = r["app_name"]
+        total = r["total_bytes"] or 0
+        if app not in top_apps:
+            if total > 0:
+                has_other_traffic = True
+            app = OTHER_APP_LABEL
+        totals = layer_totals[cls_idx]
+        key = (label, app)
+        totals[key] = totals.get(key, 0) + total
+
+    ordered_labels = sorted(labels)
+    layers = {}
+    for cls_idx, cls_name in enumerate(CLASSIFICATIONS):
+        totals = layer_totals[cls_idx]
+        datasets = []
+        for idx, app in enumerate(top_apps):
+            datasets.append(
+                {
+                    "label": app,
+                    "data": [totals.get((label, app), 0) for label in ordered_labels],
+                    "backgroundColor": colors[idx % len(colors)],
+                }
+            )
+        other_data = [totals.get((label, OTHER_APP_LABEL), 0) for label in ordered_labels]
+        if has_other_traffic or any(v > 0 for v in other_data):
+            datasets.append(
+                {
+                    "label": OTHER_APP_LABEL,
+                    "data": other_data,
+                    "backgroundColor": colors[-1],
+                }
+            )
+        layers[cls_name] = {"datasets": datasets}
+
+    return {"labels": ordered_labels, "layers": layers}
+
+
+def build_table_data(
+    layered_rows: list[dict], bucket_labels: list[str], bucket_classifications: list[str]
+) -> dict:
+    """Build the per-app series the dashboard re-aggregates for the table.
+
+    The table has to follow the same filters as the plot, so it cannot be a
+    server-rendered per-app total: the report embeds one sparse series per app
+    instead, which the client sums over the selected range and classifications.
+    Buckets are indices into the 5-minute label axis (already embedded for the
+    chart), delta-encoded because one app's buckets are almost always close
+    together -- that keeps the payload about a third smaller.
+
+    `bucket_classifications` is carried once per bucket rather than per row: a
+    stacked bar *is* the bucket, so the plot classifies a bucket as a whole, and
+    a table that classified each app's row independently would quietly disagree
+    with the plot on the buckets a poll boundary split across two classifications
+    (a few hundred KB on a month of real data). Both consumers now select the
+    same buckets.
+    """
+    bucket_index = {label: i for i, label in enumerate(bucket_labels)}
+    bucket_class = [
+        CLASSIFICATION_INDEX.get(cls if cls else "awake", 0) for cls in bucket_classifications
+    ]
+    entries_by_app: dict[str, list[tuple[int, int, int, int]]] = {}
+    for r in layered_rows:
+        index = bucket_index.get(r["timestamp_5m"])
+        if index is None:
+            continue
+        entries_by_app.setdefault(r["app_name"], []).append(
+            (
+                index,
+                r["bytes_in"] or 0,
+                r["bytes_out"] or 0,
+                r["sample_count"] or 0,
+            )
+        )
+
+    # Same order as the server-rendered table used to be: total bytes, descending.
+    ordered_apps = sorted(
+        entries_by_app, key=lambda app: -sum(e[1] + e[2] for e in entries_by_app[app])
+    )
+
+    series = []
+    for app in ordered_apps:
+        bucket_indices: list[int] = []
+        bytes_in: list[int] = []
+        bytes_out: list[int] = []
+        samples: list[int] = []
+        previous = 0
+        for index, bin_, bout, sample_count in sorted(entries_by_app[app]):
+            bucket_indices.append(index - previous)
+            previous = index
+            bytes_in.append(bin_)
+            bytes_out.append(bout)
+            samples.append(sample_count)
+        series.append(
+            {
+                "i": bucket_indices,
+                "in": bytes_in,
+                "out": bytes_out,
+                "s": samples,
+            }
+        )
+
+    return {"apps": ordered_apps, "bucketClass": bucket_class, "series": series}
 
 
 def generate_html_report(
@@ -143,6 +320,11 @@ def generate_html_report(
 
     totals = query_usage_totals(db_path, days=days, exclude_classifications=exclude_classifications)
     records_5m = query_usage_by_5m(
+        db_path, days=days, exclude_classifications=exclude_classifications
+    )
+    # One pass over the exact per-(bucket, app, classification) rows feeds the
+    # hourly/daily layers and the re-aggregatable table data.
+    layered_rows = query_usage_by_5m_layered(
         db_path, days=days, exclude_classifications=exclude_classifications
     )
     coverage = query_usage_coverage(db_path, days=days)
@@ -182,99 +364,16 @@ def generate_html_report(
     ]
 
     # Build layered views for hourly/daily: master aligned labels + per-classification layers
-    def align_layer(
-        master_labels: list[str],
-        layer_records: list[dict],
-        time_key_name: str,
-        force_include_other: bool = False,
-    ) -> list[dict]:
-        """Build per-app dataset series pinned to the master label axis for one layer."""
-        datasets = []
-        for idx, app in enumerate(top_apps):
-            color = colors[idx % len(colors)]
-            data = []
-            for t in master_labels:
-                bytes_sum = sum(
-                    r["total_bytes"]
-                    for r in layer_records
-                    if r[time_key_name] == t and r["app_name"] == app
-                )
-                data.append(bytes_sum)
-            datasets.append({"label": app, "data": data, "backgroundColor": color})
-
-        # Other Apps
-        other_data = []
-        for t in master_labels:
-            bytes_sum = sum(
-                r["total_bytes"]
-                for r in layer_records
-                if r[time_key_name] == t and r["app_name"] not in top_apps
-            )
-            other_data.append(bytes_sum)
-        if force_include_other or any(v > 0 for v in other_data):
-            datasets.append(
-                {"label": "Other Apps", "data": other_data, "backgroundColor": colors[-1]}
-            )
-
-        return datasets
-
-    # Master label axes (authoritative, unfiltered)
-    hourly_master_records = query_usage_by_hour(
-        db_path, days=days, exclude_classifications=exclude_classifications
-    )
-    daily_master_records = query_usage_by_day(
-        db_path, days=days, exclude_classifications=exclude_classifications
-    )
-
-    hourly_labels = sorted(list({r["timestamp_hour"] for r in hourly_master_records}))
-    daily_labels = sorted(list({r["day"] for r in daily_master_records}))
-
-    classifications = ["awake", "dark_wake_only", "sleep_then_full_wake"]
-
-    hourly_layers = {}
-    daily_layers = {}
-    for cls in classifications:
-        hr_recs = query_usage_by_hour(
-            db_path,
-            days=days,
-            exclude_classifications=exclude_classifications,
-            only_classification=cls,
-        )
-        dy_recs = query_usage_by_day(
-            db_path,
-            days=days,
-            exclude_classifications=exclude_classifications,
-            only_classification=cls,
-        )
-        # Force inclusion of an "Other Apps" series if the master (unfiltered) records contain any below-top-apps traffic
-        hourly_layers[cls] = {
-            "datasets": align_layer(
-                hourly_labels,
-                hr_recs,
-                "timestamp_hour",
-                force_include_other=any(
-                    r["app_name"] not in top_apps and (r["total_bytes"] or 0) > 0
-                    for r in hourly_master_records
-                ),
-            )
-        }
-        daily_layers[cls] = {
-            "datasets": align_layer(
-                daily_labels,
-                dy_recs,
-                "day",
-                force_include_other=any(
-                    r["app_name"] not in top_apps and (r["total_bytes"] or 0) > 0
-                    for r in daily_master_records
-                ),
-            )
-        }
-
     views_data = {
         "5m": build_view_dataset(records_5m, "timestamp_5m", top_apps, colors),
-        "hourly": {"labels": hourly_labels, "layers": hourly_layers},
-        "daily": {"labels": daily_labels, "layers": daily_layers},
+        "hourly": build_layered_view(layered_rows, "hourly", top_apps, colors),
+        "daily": build_layered_view(layered_rows, "daily", top_apps, colors),
     }
+    table_data = build_table_data(
+        layered_rows,
+        views_data["5m"]["labels"],
+        views_data["5m"]["bucketClassification"],
+    )
 
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -283,9 +382,12 @@ def generate_html_report(
     cls_initially_excluded = exclude_classifications or []
 
     # The date filter can only ever select buckets that exist, so the inputs are
-    # bounded by the data's own extent rather than by "now".
-    coverage_first = coverage.get("first_bucket") or ""
-    coverage_last = coverage.get("last_bucket") or ""
+    # bounded by the data's own extent rather than by "now". The bounds go in as
+    # datetime-local values ("T" separator), not database labels (" " separator):
+    # a browser silently ignores a min/max it cannot parse, which would leave the
+    # inputs unbounded exactly when they are supposed to be constrained.
+    coverage_first = bucket_label_to_input_value(coverage.get("first_bucket"))
+    coverage_last = bucket_label_to_input_value(coverage.get("last_bucket"))
     days_with_data = coverage.get("day_count", 0)
     if days is None:
         window_detail = f"All recorded history · {days_with_data} days with data"
@@ -306,6 +408,7 @@ def generate_html_report(
     html_content = html_content.replace("__ACTIVE_APPS__", str(len(totals)))
     html_content = html_content.replace("__TABLE_ROWS__", table_html)
     html_content = html_content.replace("__VIEWS_DATA_JSON__", json.dumps(views_data))
+    html_content = html_content.replace("__TABLE_DATA_JSON__", json.dumps(table_data))
     html_content = html_content.replace(
         "__CLS_INITIALLY_EXCLUDED__", json.dumps(cls_initially_excluded)
     )

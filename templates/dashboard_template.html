@@ -261,6 +261,12 @@
             border-bottom: 1px solid var(--card-border);
         }
 
+        td.empty-row {
+            text-align: center;
+            color: var(--text-secondary);
+            padding: 24px;
+        }
+
         tr:hover {
             background: rgba(255, 255, 255, 0.02);
         }
@@ -302,6 +308,40 @@
         .cls-filter-label:hover {
             color: var(--text-primary);
         }
+
+        .filter-bar {
+            display: flex;
+            align-items: center;
+            gap: 24px;
+            flex-wrap: wrap;
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 14px 18px;
+            margin-bottom: 24px;
+        }
+
+        .filter-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .filter-label {
+            color: var(--text-secondary);
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            white-space: nowrap;
+        }
+
+        .filter-note {
+            color: var(--text-secondary);
+            font-size: 0.78rem;
+            margin-left: auto;
+        }
     </style>
 </head>
 <body>
@@ -318,26 +358,54 @@
         <span>__COVERAGE_SUMMARY__</span>
     </div>
 
+    <div class="filter-bar">
+        <div class="filter-group">
+            <span class="filter-label">Time range</span>
+            <div class="date-filter">
+                <input type="datetime-local" id="startDate" min="__COVERAGE_FIRST__" max="__COVERAGE_LAST__">
+                <span style="color: var(--text-secondary);">to</span>
+                <input type="datetime-local" id="endDate" min="__COVERAGE_FIRST__" max="__COVERAGE_LAST__">
+                <button onclick="applyFilter()">Apply</button>
+                <button onclick="resetFilter()">Reset</button>
+            </div>
+        </div>
+        <div class="filter-group">
+            <span class="filter-label">Traffic type</span>
+            <div class="cls-filters" id="clsFilters">
+                <label class="cls-filter-label">
+                    <input type="checkbox" id="chk-awake" checked onchange="applyFilter()"> Awake
+                </label>
+                <label class="cls-filter-label">
+                    <input type="checkbox" id="chk-dark-wake" checked onchange="applyFilter()"> Dark-wake gaps
+                </label>
+                <label class="cls-filter-label">
+                    <input type="checkbox" id="chk-sleep-wake" checked onchange="applyFilter()"> Post-wake catch-up bursts
+                </label>
+            </div>
+        </div>
+        <div class="filter-note">These filters apply to the timeline, the summary and the table.</div>
+    </div>
+
     <div class="stats-grid">
         <div class="stat-card">
             <div class="stat-title">Total Transfer</div>
-            <div class="stat-value">__TOTAL_TRANSFER__</div>
-            <div class="stat-detail">__WINDOW_DETAIL__</div>
+            <div class="stat-value" id="statTotalTransfer">__TOTAL_TRANSFER__</div>
+            <div class="stat-detail" id="statTotalTransferDetail">__WINDOW_DETAIL__</div>
         </div>
         <div class="stat-card">
             <div class="stat-title">Total Received</div>
-            <div class="stat-value">__TOTAL_IN__</div>
+            <div class="stat-value" id="statTotalIn">__TOTAL_IN__</div>
             <div class="stat-detail">Download Volume</div>
         </div>
         <div class="stat-card">
             <div class="stat-title">Total Sent</div>
-            <div class="stat-value">__TOTAL_OUT__</div>
+            <div class="stat-value" id="statTotalOut">__TOTAL_OUT__</div>
             <div class="stat-detail">Upload Volume</div>
         </div>
         <div class="stat-card">
             <div class="stat-title">Active Apps</div>
-            <div class="stat-value">__ACTIVE_APPS__</div>
-            <div class="stat-detail">Tracked Applications</div>
+            <div class="stat-value" id="statActiveApps">__ACTIVE_APPS__</div>
+            <div class="stat-detail">With traffic in the current filter</div>
         </div>
     </div>
 
@@ -345,28 +413,10 @@
         <div class="chart-header" style="flex-wrap: wrap; gap: 12px;">
             <div class="chart-title">Transfer Timeline Breakdown</div>
             <div class="chart-controls" style="flex-wrap: wrap; gap: 12px;">
-                <div class="date-filter">
-                    <input type="datetime-local" id="startDate" min="__COVERAGE_FIRST__" max="__COVERAGE_LAST__">
-                    <span style="color: var(--text-secondary);">to</span>
-                    <input type="datetime-local" id="endDate" min="__COVERAGE_FIRST__" max="__COVERAGE_LAST__">
-                    <button onclick="applyFilter()">Apply</button>
-                    <button onclick="resetFilter()">Reset</button>
-                </div>
                 <div class="granularity-selector">
                     <button class="btn-granularity active" onclick="switchGranularity('5m', this)">5-Min</button>
                     <button class="btn-granularity" onclick="switchGranularity('hourly', this)">Hourly</button>
                     <button class="btn-granularity" onclick="switchGranularity('daily', this)">Daily</button>
-                </div>
-                <div class="cls-filters" id="clsFilters">
-                    <label class="cls-filter-label">
-                        <input type="checkbox" id="chk-awake" checked onchange="applyFilter()"> Awake
-                    </label>
-                    <label class="cls-filter-label">
-                        <input type="checkbox" id="chk-dark-wake" checked onchange="applyFilter()"> Dark-wake gaps
-                    </label>
-                    <label class="cls-filter-label">
-                        <input type="checkbox" id="chk-sleep-wake" checked onchange="applyFilter()"> Post-wake catch-up bursts
-                    </label>
                 </div>
             </div>
         </div>
@@ -377,20 +427,23 @@
 
     <div class="table-container">
         <div class="table-header">
-            <div class="chart-title">Application Usage Summary</div>
+            <div>
+                <div class="chart-title">Application Usage Summary</div>
+                <div class="subtitle" id="tableScope"></div>
+            </div>
             <input type="text" id="searchInput" onkeyup="filterTable()" placeholder="Search application...">
         </div>
         <table id="usageTable">
             <thead>
                 <tr>
-                    <th class="sortable" onclick="sortTable(0, false)">Application</th>
-                    <th class="sortable" onclick="sortTable(1, true)">Received</th>
-                    <th class="sortable" onclick="sortTable(2, true)">Sent</th>
-                    <th class="sortable" onclick="sortTable(3, true)">Total Transfer</th>
-                    <th class="sortable" onclick="sortTable(4, false)">Samples</th>
+                    <th class="sortable" onclick="sortTable(0)">Application</th>
+                    <th class="sortable" onclick="sortTable(1)">Received</th>
+                    <th class="sortable" onclick="sortTable(2)">Sent</th>
+                    <th class="sortable" onclick="sortTable(3)">Total Transfer</th>
+                    <th class="sortable" onclick="sortTable(4)">Samples</th>
                 </tr>
             </thead>
-            <tbody>
+            <tbody id="usageTableBody">
                 __TABLE_ROWS__
             </tbody>
         </table>
@@ -398,11 +451,31 @@
 
     <script>
         const viewsData = __VIEWS_DATA_JSON__;
+        const tableData = __TABLE_DATA_JSON__;
         const initiallyExcluded = __CLS_INITIALLY_EXCLUDED__;
 
         // Bucket width in seconds per granularity, used to snap the date-range
         // selection onto the axis the active view actually has.
         const GRANULARITY_STEPS = { '5m': 300, 'hourly': 3600, 'daily': 86400 };
+
+        // Classification order must match the indices baked into tableData.
+        const CLASS_ORDER = ['awake', 'dark_wake_only', 'sleep_then_full_wake'];
+
+        // Table column order, used to sort the client-side aggregate.
+        const TABLE_COLUMNS = ['name', 'bytesIn', 'bytesOut', 'total', 'samples'];
+
+        // ── Global filter state ───────────────────────────────────────────────
+        // One state object and one render entry point: the timeline, the summary
+        // and the table are all derived from it, so they cannot end up describing
+        // different slices of the data.
+        const state = {
+            granularity: '5m',
+            start: null,          // naive ms; null means "everything covered"
+            end: null,
+            search: '',
+            sortCol: 3,
+            sortAscending: false
+        };
 
         const ctx = document.getElementById('usageChart').getContext('2d');
 
@@ -445,11 +518,19 @@
             return cls;
         }
 
+        // Checkbox ids per classification, so the filter, the summary wording and
+        // the payload index order cannot drift apart.
+        const CLASS_CHECKBOX = {
+            awake: 'chk-awake',
+            dark_wake_only: 'chk-dark-wake',
+            sleep_then_full_wake: 'chk-sleep-wake'
+        };
+
         function getCheckedClassifications() {
             const checked = new Set();
-            if (document.getElementById('chk-awake').checked)      checked.add('awake');
-            if (document.getElementById('chk-dark-wake').checked)  checked.add('dark_wake_only');
-            if (document.getElementById('chk-sleep-wake').checked) checked.add('sleep_then_full_wake');
+            for (const cls of CLASS_ORDER) {
+                if (document.getElementById(CLASS_CHECKBOX[cls]).checked) checked.add(cls);
+            }
             return checked;
         }
 
@@ -499,7 +580,7 @@
             });
         }
 
-        // ── Chart init (starts empty; applyFilter() renders first frame) ──────
+        // ── Chart init (starts empty; applyFilter() renders the first frame) ──
         let currentChart = new Chart(ctx, {
             type: 'bar',
             data: { labels: [], datasets: [] },
@@ -542,8 +623,6 @@
             }
         });
 
-        let currentGranularity = '5m';
-
         window.onload = function() {
             // Apply initial excluded state from --exclude CLI flag
             if (initiallyExcluded.includes('dark_wake_only')) {
@@ -583,6 +662,12 @@
                    'T' + pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes());
         }
 
+        // The same instant rendered the way the database labels buckets, so the
+        // wording under the summary reads like the rest of the report.
+        function naiveMsToLabel(ms) {
+            return naiveMsToInputValue(ms).replace('T', ' ');
+        }
+
         // The only ranges that can ever select data are the ones the generator
         // measured, so they are read straight off the inputs' min/max.
         function coverageBounds() {
@@ -596,65 +681,118 @@
 
         // Snap the selection onto the current granularity's bucket grid and
         // clamp it into the covered range, so a filter can never silently
-        // select buckets that were never recorded.
+        // select buckets that were never recorded. The clamped result is what
+        // every consumer (chart, table, summary) reads.
         function clampRange() {
             const startEl = document.getElementById('startDate');
             const endEl   = document.getElementById('endDate');
             const bounds  = coverageBounds();
-            if (bounds.first === null || bounds.last === null) return;
+            if (bounds.first === null || bounds.last === null) {
+                state.start = null;
+                state.end = null;
+                return;
+            }
 
-            const step = GRANULARITY_STEPS[currentGranularity] || 300;
+            // Snapping happens on the *naive millisecond* timeline, so the step
+            // has to be converted from seconds to milliseconds first: dividing
+            // ms by 300 (seconds) would snap to a 0.3s grid, i.e. not at all.
+            const step = (GRANULARITY_STEPS[state.granularity] || 300) * 1000;
             let start = labelToNaiveMs(startEl.value);
             let end   = labelToNaiveMs(endEl.value);
             if (start === null) start = bounds.first;
             if (end === null)   end   = bounds.last;
-            start = Math.floor(start / step) * step;
-            end   = Math.ceil(end / step) * step;
+
+            // Both ends floor onto the active grid, which is what "the bucket
+            // that contains this instant" means for a series of buckets: a bar
+            // is atomic, so the selection is "every bucket the requested window
+            // overlaps", shown whole. Ceiling the end instead would pull in the
+            // next bucket -- ask for one day and get a sliver of the next.
+            //
+            // The covered range is snapped onto the same axis before it is used
+            // as a clamp. The collector's first bucket lands at an arbitrary
+            // minute, so clamping onto the raw coverage bound would immediately
+            // drag a grid-aligned selection back off the grid.
+            const first = Math.floor(bounds.first / step) * step;
+            const last  = Math.floor(bounds.last / step) * step;
+            start = Math.min(Math.max(Math.floor(start / step) * step, first), last);
+            end   = Math.min(Math.max(Math.floor(end / step) * step, first), last);
             if (start > end) { const swap = start; start = end; end = swap; }
-            start = Math.min(Math.max(start, bounds.first), bounds.last);
-            end   = Math.min(Math.max(end, bounds.first), bounds.last);
-            if (start > end) start = end;
 
             startEl.value = naiveMsToInputValue(start);
             endEl.value   = naiveMsToInputValue(end);
+            state.start = start;
+            state.end = end;
         }
 
-        // ── Unified filter: date-range ∩ classification ───────────────────────
+        function inRange(ms) {
+            return state.start === null || (ms >= state.start && ms <= state.end);
+        }
+
+        // The bucket a timestamp belongs to on the *active* view's axis. A bar
+        // owns its whole period, so the table and the summary have to select
+        // 5-minute buckets by the coarse bucket they belong to -- otherwise the
+        // 23:00 hourly bar and the summary for the same window would report
+        // different totals whenever the window ended mid-bucket.
+        function periodStartFor(ms) {
+            const step = (GRANULARITY_STEPS[state.granularity] || 300) * 1000;
+            return Math.floor(ms / step) * step;
+        }
+
+        function inRangeAsBucket(ms) {
+            return state.start === null || inRange(periodStartFor(ms));
+        }
+
+        // The labels the active view plots, in order. Kept separate from the
+        // embedded axis so the empty-interval control can add buckets that were
+        // never recorded without touching the embedded data.
+        function activeAxisLabels(viewKey) {
+            const view = viewsData[viewKey];
+            return (view && view.labels) || [];
+        }
+
+        // Naive ms per axis label. The embedded labels never change, so this is
+        // computed once per view and reused on every render.
+        const axisMsCache = {};
+        function axisNaiveMs(viewKey) {
+            if (!axisMsCache[viewKey]) {
+                axisMsCache[viewKey] = activeAxisLabels(viewKey).map(labelToNaiveMs);
+            }
+            return axisMsCache[viewKey];
+        }
+
+        // ── Unified filter: date-range ∩ classification, applied to
+        //    the timeline, the summary and the table alike ────────────────────
         function applyFilter() {
             clampRange();
-            const startVal = document.getElementById('startDate').value;
-            const endVal   = document.getElementById('endDate').value;
-            const checkedCls = getCheckedClassifications();
-            const originalData = viewsData[currentGranularity];
-            if (!originalData) return;
+            renderChart();
+            const rows = aggregateRows();
+            renderStatCards(rows);
+            renderTable(searchRows(rows));
+        }
 
-            if (currentGranularity === '5m') {
+        function renderChart() {
+            const viewKey = state.granularity;
+            const view = viewsData[viewKey];
+            if (!view) return;
+
+            const checkedCls = getCheckedClassifications();
+            const labels = activeAxisLabels(viewKey);
+            const ms = axisNaiveMs(viewKey);
+
+            if (viewKey === '5m') {
                 const filteredLabels = [];
                 const filteredCls    = [];
-                const filteredDatasets = originalData.datasets.map(ds => ({ ...ds, data: [] }));
+                const filteredDatasets = view.datasets.map(ds => ({ ...ds, data: [] }));
 
-                for (let i = 0; i < originalData.labels.length; i++) {
-                    const label = originalData.labels[i];
-                    const cls   = classKey(originalData.bucketClassification?.[i]);
-
-                    // Date-range filter (always pass if inputs are empty)
-                    let dateOk = true;
-                    if (startVal && endVal) {
-                        let cmpLabel = label;
-                        let cmpStart = startVal.replace('T', ' ');
-                        let cmpEnd   = endVal.replace('T', ' ');
-                        dateOk = cmpLabel >= cmpStart && cmpLabel <= cmpEnd;
-                    }
-
+                for (let i = 0; i < labels.length; i++) {
+                    const cls = classKey(view.bucketClassification ? view.bucketClassification[i] : null);
                     // Classification filter: per-row classification must be checked
-                    const clsOk = checkedCls.has(cls);
+                    if (!inRange(ms[i]) || !checkedCls.has(cls)) continue;
 
-                    if (dateOk && clsOk) {
-                        filteredLabels.push(label);
-                        filteredCls.push(cls);
-                        for (let j = 0; j < originalData.datasets.length; j++) {
-                            filteredDatasets[j].data.push(originalData.datasets[j].data[i]);
-                        }
+                    filteredLabels.push(labels[i]);
+                    filteredCls.push(cls);
+                    for (let j = 0; j < view.datasets.length; j++) {
+                        filteredDatasets[j].data.push(view.datasets[j].data[i]);
                     }
                 }
 
@@ -668,8 +806,8 @@
             }
 
             // Hourly / Daily: sum selected layers client-side (labels are master-aligned)
-            const combined = buildCombinedDataForGranularity(currentGranularity, checkedCls);
-            const labels = combined.labels || [];
+            const combined = buildCombinedDataForGranularity(viewKey, checkedCls);
+            const combinedLabels = combined.labels || [];
             const layers = combined.layers || {};
             const combinedDatasets = combined.datasets || [];
 
@@ -679,7 +817,7 @@
             // A layer's contribution only counts here if its checkbox is checked --
             // otherwise a hour that mixes e.g. awake + dark-wake traffic would keep
             // "seeing" the unchecked awake bytes and never render as exclusively dark-wake.
-            const perDatasetClassifications = labels.map((_, i) => {
+            const perDatasetClassifications = combinedLabels.map((_, i) => {
                 const arr = [];
                 for (let j = 0; j < combinedDatasets.length; j++) {
                     const awakeRaw = (layers['awake'] && layers['awake'].datasets[j] && layers['awake'].datasets[j].data[i]) || 0;
@@ -704,27 +842,12 @@
             const filteredDatasets = combinedDatasets.map(ds => ({ ...ds, data: [] }));
             const filteredClassifications = [];
 
-            for (let i = 0; i < labels.length; i++) {
-                const label = labels[i];
-                let dateOk = true;
-                if (startVal && endVal) {
-                    let cmpLabel = label;
-                    let cmpStart = startVal.replace('T', ' ');
-                    let cmpEnd   = endVal.replace('T', ' ');
-                    if (currentGranularity === 'daily') {
-                        cmpLabel = label.substring(0, 10);
-                        cmpStart = cmpStart.substring(0, 10);
-                        cmpEnd   = cmpEnd.substring(0, 10);
-                    }
-                    dateOk = cmpLabel >= cmpStart && cmpLabel <= cmpEnd;
-                }
-
-                if (dateOk) {
-                    filteredLabels.push(label);
-                    filteredClassifications.push(perDatasetClassifications[i]);
-                    for (let j = 0; j < combinedDatasets.length; j++) {
-                        filteredDatasets[j].data.push(combinedDatasets[j].data[i] || 0);
-                    }
+            for (let i = 0; i < combinedLabels.length; i++) {
+                if (!inRange(ms[i])) continue;
+                filteredLabels.push(combinedLabels[i]);
+                filteredClassifications.push(perDatasetClassifications[i]);
+                for (let j = 0; j < combinedDatasets.length; j++) {
+                    filteredDatasets[j].data.push(combinedDatasets[j].data[i] || 0);
                 }
             }
 
@@ -736,19 +859,149 @@
             currentChart.update();
         }
 
+        // ── Table + summary aggregate ──────────────────────────────────────────
+        // The table used to be a server-rendered per-app total, which could not
+        // follow the filters. Instead every app's series is embedded at 5-minute
+        // resolution and summed here, so the table always describes exactly the
+        // slice the timeline is showing.
+        //
+        // This is the *global* filter only (date range ∩ classification). The
+        // search box is a table-local affordance applied afterwards by
+        // searchRows(), so typing in it cannot quietly redefine what the chart
+        // and the summary cards mean.
+        function aggregateRows() {
+            if (!tableData || !tableData.apps) return [];
+
+            const fiveMinLabels = activeAxisLabels('5m');
+            const fiveMinMs = axisNaiveMs('5m');
+            const selected = new Uint8Array(fiveMinLabels.length);
+            for (let i = 0; i < fiveMinLabels.length; i++) {
+                if (inRangeAsBucket(fiveMinMs[i])) selected[i] = 1;
+            }
+
+            const checkedCls = getCheckedClassifications();
+            const classSelected = CLASS_ORDER.map(cls => (checkedCls.has(cls) ? 1 : 0));
+            // Classification is a property of the bucket, not of the app: the
+            // plot draws one stacked bar per bucket, so the table selects whole
+            // buckets the same way or the two would report different totals.
+            const bucketClass = (tableData && tableData.bucketClass) || [];
+
+            const rows = [];
+            for (let a = 0; a < tableData.apps.length; a++) {
+                const name = tableData.apps[a];
+
+                // Bucket indices arrive delta-encoded, so a single running sum
+                // turns them back into absolute positions on the 5-minute axis.
+                const series = tableData.series[a];
+                let index = 0, bytesIn = 0, bytesOut = 0, samples = 0, hits = 0;
+                for (let k = 0; k < series.i.length; k++) {
+                    index += series.i[k];
+                    if (!selected[index] || !classSelected[bucketClass[index]]) continue;
+                    bytesIn += series['in'][k];
+                    bytesOut += series['out'][k];
+                    samples += series['s'][k];
+                    hits++;
+                }
+                if (hits === 0) continue;
+
+                rows.push({ name, bytesIn, bytesOut, total: bytesIn + bytesOut, samples });
+            }
+
+            sortRows(rows);
+            return rows;
+        }
+
+        function searchRows(rows) {
+            const search = state.search.toLowerCase();
+            if (!search) return rows;
+            return rows.filter(row => row.name.toLowerCase().indexOf(search) !== -1);
+        }
+
+        function sortRows(rows) {
+            const key = TABLE_COLUMNS[state.sortCol] || 'total';
+            const direction = state.sortAscending ? 1 : -1;
+            rows.sort((a, b) => {
+                if (key === 'name') {
+                    const left = a.name.toLowerCase();
+                    const right = b.name.toLowerCase();
+                    if (left < right) return -direction;
+                    if (left > right) return direction;
+                    return 0;
+                }
+                return (a[key] - b[key]) * direction;
+            });
+        }
+
+        function renderTable(rows) {
+            const tbody = document.getElementById('usageTableBody');
+            const tracked = (tableData && tableData.apps) ? tableData.apps.length : 0;
+
+            if (rows.length === 0) {
+                const message = tracked > 0
+                    ? 'No traffic matches the current filter.'
+                    : 'No network usage records found for this period.';
+                tbody.innerHTML = '<tr><td colspan="5" class="empty-row">' + message + '</td></tr>';
+            } else {
+                let html = '';
+                for (const row of rows) {
+                    html += '<tr>' +
+                        '<td><strong>' + escapeHtml(row.name) + '</strong></td>' +
+                        '<td>' + formatBytesJS(row.bytesIn) + '</td>' +
+                        '<td>' + formatBytesJS(row.bytesOut) + '</td>' +
+                        '<td><span class="badge">' + formatBytesJS(row.total) + '</span></td>' +
+                        '<td>' + row.samples + '</td>' +
+                        '</tr>';
+                }
+                tbody.innerHTML = html;
+            }
+
+            document.getElementById('tableScope').textContent =
+                rows.length === tracked ? tracked + ' apps' : rows.length + ' of ' + tracked + ' apps';
+            updateSortIndicators();
+        }
+
+        function renderStatCards(rows) {
+            let bytesIn = 0, bytesOut = 0;
+            for (const row of rows) {
+                bytesIn += row.bytesIn;
+                bytesOut += row.bytesOut;
+            }
+            setText('statTotalTransfer', formatBytesJS(bytesIn + bytesOut));
+            setText('statTotalIn', formatBytesJS(bytesIn));
+            setText('statTotalOut', formatBytesJS(bytesOut));
+            setText('statActiveApps', String(rows.length));
+            setText('statTotalTransferDetail', selectionDetail());
+        }
+
+        // The headline number is filtered, so the line under it has to say what
+        // it was filtered to. Leaving the generator's "last 30 days" wording in
+        // place under a one-hour total is how a report ends up lying.
+        function selectionDetail() {
+            const checked = CLASS_ORDER.filter(cls => getCheckedClassifications().has(cls));
+            const types = checked.length === CLASS_ORDER.length
+                ? 'all traffic types'
+                : checked.length === 0
+                    ? 'no traffic types'
+                    : checked.join(' + ');
+            if (state.start === null) return 'All recorded data · ' + types;
+            return naiveMsToLabel(state.start) + ' to ' + naiveMsToLabel(state.end) + ' · ' + types;
+        }
+
         function resetFilter() {
             initDateInputs();
             // Re-check all boxes on reset
             document.getElementById('chk-awake').checked      = true;
             document.getElementById('chk-dark-wake').checked  = true;
             document.getElementById('chk-sleep-wake').checked = true;
+            state.search = '';
+            document.getElementById('searchInput').value = '';
             applyFilter();
         }
 
         function switchGranularity(viewKey, btnElement) {
             document.querySelectorAll('.btn-granularity').forEach(btn => btn.classList.remove('active'));
             btnElement.classList.add('active');
-            currentGranularity = viewKey;
+            state.granularity = viewKey;
             if (viewsData[viewKey]) {
                 applyFilter();
             }
@@ -763,61 +1016,39 @@
             return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
         }
 
-        function filterTable() {
-            const input  = document.getElementById('searchInput');
-            const filter = input.value.toLowerCase();
-            const table  = document.getElementById('usageTable');
-            const tr     = table.getElementsByTagName('tr');
-            for (let i = 1; i < tr.length; i++) {
-                const td = tr[i].getElementsByTagName('td')[0];
-                if (td) {
-                    const txtValue = td.textContent || td.innerText;
-                    tr[i].style.display = txtValue.toLowerCase().indexOf(filter) > -1 ? '' : 'none';
-                }
-            }
+        function escapeHtml(value) {
+            return String(value).replace(/[&<>"']/g, ch => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            })[ch]);
         }
 
-        let currentSortCol = -1;
-        let sortAscending  = true;
+        function setText(id, value) {
+            document.getElementById(id).textContent = value;
+        }
 
-        function sortTable(colIndex, isRaw) {
-            const table = document.getElementById('usageTable');
-            const tbody = table.getElementsByTagName('tbody')[0];
-            const rows  = Array.from(tbody.getElementsByTagName('tr'));
-            if (rows.length === 1 && rows[0].cells.length === 1) return;
+        function filterTable() {
+            state.search = document.getElementById('searchInput').value;
+            renderTable(searchRows(aggregateRows()));
+        }
 
-            if (currentSortCol === colIndex) {
-                sortAscending = !sortAscending;
+        function sortTable(colIndex) {
+            if (state.sortCol === colIndex) {
+                state.sortAscending = !state.sortAscending;
             } else {
-                sortAscending  = true;
-                currentSortCol = colIndex;
+                state.sortCol = colIndex;
+                // Applications read alphabetically; the measured columns are
+                // most useful largest-first the first time they are picked.
+                state.sortAscending = colIndex === 0;
             }
+            renderTable(searchRows(aggregateRows()));
+        }
 
-            rows.sort((a, b) => {
-                let cellA = a.getElementsByTagName('td')[colIndex];
-                let cellB = b.getElementsByTagName('td')[colIndex];
-                let valA, valB;
-                if (isRaw) {
-                    valA = parseInt(cellA.getAttribute('data-raw') || 0, 10);
-                    valB = parseInt(cellB.getAttribute('data-raw') || 0, 10);
-                } else if (colIndex === 4) {
-                    valA = parseInt(cellA.textContent || cellA.innerText, 10);
-                    valB = parseInt(cellB.textContent || cellB.innerText, 10);
-                } else {
-                    valA = (cellA.textContent || cellA.innerText).toLowerCase();
-                    valB = (cellB.textContent || cellB.innerText).toLowerCase();
-                }
-                if (valA < valB) return sortAscending ? -1 : 1;
-                if (valA > valB) return sortAscending ?  1 : -1;
-                return 0;
-            });
-
-            const ths = table.getElementsByTagName('th');
+        function updateSortIndicators() {
+            const ths = document.getElementById('usageTable').getElementsByTagName('th');
             for (let i = 0; i < ths.length; i++) {
                 ths[i].innerHTML = ths[i].innerHTML.replace(/ [▲▼]/, '');
-                if (i === colIndex) ths[i].innerHTML += sortAscending ? ' ▲' : ' ▼';
+                if (i === state.sortCol) ths[i].innerHTML += state.sortAscending ? ' ▲' : ' ▼';
             }
-            rows.forEach(row => tbody.appendChild(row));
         }
     </script>
 </body>

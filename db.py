@@ -478,3 +478,60 @@ def query_usage_by_5m(
         return results
     finally:
         conn.close()
+
+
+def query_usage_by_5m_layered(
+    db_path: str,
+    days: Optional[int] = None,
+    app_filter: Optional[str] = None,
+    exclude_classifications: Optional[list[str]] = None,
+) -> list[dict]:
+    """Aggregate usage per 5-minute bucket + app + gap_classification.
+
+    Unlike query_usage_by_5m(), which collapses a bucket+app to a single row
+    with MAX(gap_classification), this keeps one row per classification, so
+    callers can split a bucket's bytes by class without inferring anything.
+    Summing the returned rows over gap_classification reproduces the
+    unfiltered query_usage_by_5m() totals.
+    """
+    conn = get_connection(db_path)
+    try:
+        sql = """
+            SELECT timestamp_5m, day, app_name, gap_classification,
+                   SUM(bytes_in) as bytes_in,
+                   SUM(bytes_out) as bytes_out,
+                   SUM(bytes_in + bytes_out) as total_bytes,
+                   SUM(sample_count) as sample_count
+            FROM usage_5m
+        """
+        where_clauses = []
+        params: list[object] = []
+
+        if days is not None:
+            where_clauses.append("day >= date('now', 'localtime', '-' || ? || ' days')")
+            params.append(days)
+
+        if app_filter:
+            where_clauses.append("app_name LIKE ?")
+            params.append(f"%{app_filter}%")
+
+        if exclude_classifications:
+            placeholders = ",".join("?" * len(exclude_classifications))
+            where_clauses.append(
+                f"(gap_classification IS NULL OR gap_classification NOT IN ({placeholders}))"
+            )
+            params.extend(exclude_classifications)
+
+        if where_clauses:
+            sql += " WHERE " + " AND ".join(where_clauses)
+
+        sql += (
+            " GROUP BY timestamp_5m, day, app_name, gap_classification"
+            " ORDER BY timestamp_5m, app_name, gap_classification"
+        )
+
+        cursor = conn.execute(sql, params)
+        results = [dict(row) for row in cursor.fetchall()]
+        return results
+    finally:
+        conn.close()

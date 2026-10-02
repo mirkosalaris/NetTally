@@ -30,6 +30,7 @@ from db import (
     init_db,
     load_process_states,
     query_usage_by_5m,
+    query_usage_by_5m_layered,
     query_usage_by_day,
     query_usage_by_hour,
     query_usage_coverage,
@@ -38,7 +39,7 @@ from db import (
     update_process_states,
 )
 from html_generator import build_coverage_summary, generate_html_report
-from report import generate_totals_report, parse_exclude_classes
+from report import format_bytes, generate_totals_report, parse_exclude_classes
 
 
 def extract_json_var(content: str, var_name: str):
@@ -682,7 +683,9 @@ class TestHtmlCoverageReporting(unittest.TestCase):
         content = self._generate()
         for field in ("startDate", "endDate"):
             with self.subTest(field=field):
-                self.assertIn(f'id="{field}" min="{day_str} 09:05" max="{day_str} 21:40"', content)
+                # datetime-local only parses the 'T' form; a ' ' separator would
+                # be silently ignored by the browser and leave the input open.
+                self.assertIn(f'id="{field}" min="{day_str}T09:05" max="{day_str}T21:40"', content)
 
     def test_report_without_data_has_no_bounds_and_says_nothing_was_recorded(self):
         content = self._generate("coverage_empty.html")
@@ -705,7 +708,241 @@ class TestHtmlCoverageReporting(unittest.TestCase):
         content = self._generate(
             "coverage_excluded.html", exclude_classifications=["dark_wake_only"]
         )
-        self.assertIn(f'id="startDate" min="{day_str} 03:00" max="{day_str} 22:00"', content)
+        self.assertIn(f'id="startDate" min="{day_str}T03:00" max="{day_str}T22:00"', content)
+
+
+class TestQueryUsageBy5mLayered(unittest.TestCase):
+    """The layered query is the single source the table and the coarse views use."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.db_path = os.path.join(self.temp_dir.name, "layered.db")
+        init_db(self.db_path)
+        self.day = datetime.date.today().isoformat()
+        self.ts = f"{self.day} 10:05"
+
+    def _seed_mixed_bucket(self):
+        # One bucket, two classifications: a poll boundary split it, so one app
+        # was recorded awake and another dark-wake in the same 5 minutes. A
+        # single (bucket, app) row keeps one classification -- the primary key is
+        # (timestamp_5m, app_name) and the last write wins -- so the split is
+        # across apps, which is exactly how it happens in production.
+        record_usage_deltas(self.db_path, self.ts, self.day, {"AppA": (100, 10)})
+        record_usage_deltas(
+            self.db_path, self.ts, self.day, {"AppB": (7, 3)}, gap_classification="dark_wake_only"
+        )
+
+    def test_layers_sum_to_the_unfiltered_query(self):
+        self._seed_mixed_bucket()
+        record_usage_deltas(
+            self.db_path, self.ts, self.day, {"AppB": (1, 2)}, gap_classification="unknown_gap"
+        )
+
+        flat = query_usage_by_5m(self.db_path, days=30)
+        layered = query_usage_by_5m_layered(self.db_path, days=30)
+        self.assertEqual(len(layered), 2)
+
+        by_app_flat: dict[str, int] = {}
+        for r in flat:
+            by_app_flat[r["app_name"]] = by_app_flat.get(r["app_name"], 0) + r["total_bytes"]
+        by_app_layered: dict[str, int] = {}
+        for r in layered:
+            by_app_layered[r["app_name"]] = by_app_layered.get(r["app_name"], 0) + r["total_bytes"]
+        self.assertEqual(by_app_layered, by_app_flat)
+
+    def test_one_row_per_bucket_app_and_classification(self):
+        self._seed_mixed_bucket()
+
+        layered = query_usage_by_5m_layered(self.db_path, days=30)
+        self.assertEqual(
+            [(r["app_name"], r["gap_classification"]) for r in layered],
+            [("AppA", None), ("AppB", "dark_wake_only")],
+        )
+        self.assertEqual([r["total_bytes"] for r in layered], [110, 10])
+
+    def test_unknown_gap_is_kept_as_its_own_layer(self):
+        # NULL and 'unknown_gap' both fold into the awake *view*, but the query
+        # must not merge them away: --exclude and the stripe patterns key off it.
+        record_usage_deltas(self.db_path, self.ts, self.day, {"AppA": (5, 5)})
+        record_usage_deltas(
+            self.db_path, self.ts, self.day, {"AppB": (6, 6)}, gap_classification="unknown_gap"
+        )
+
+        layered = query_usage_by_5m_layered(self.db_path, days=30)
+        self.assertEqual(
+            sorted(str(r["gap_classification"]) for r in layered), ["None", "unknown_gap"]
+        )
+        self.assertEqual({r["app_name"] for r in layered}, {"AppA", "AppB"})
+
+    def test_exclude_drops_whole_layers(self):
+        self._seed_mixed_bucket()
+
+        layered = query_usage_by_5m_layered(
+            self.db_path, days=30, exclude_classifications=["dark_wake_only"]
+        )
+        self.assertEqual([r["gap_classification"] for r in layered], [None])
+        self.assertEqual([r["total_bytes"] for r in layered], [110])
+
+    def test_app_filter_still_applies(self):
+        self._seed_mixed_bucket()
+        record_usage_deltas(self.db_path, self.ts, self.day, {"OtherApp": (9, 9)})
+
+        layered = query_usage_by_5m_layered(self.db_path, days=30, app_filter="AppA")
+        self.assertEqual({r["app_name"] for r in layered}, {"AppA"})
+
+
+class TestHtmlTablePayload(unittest.TestCase):
+    """The table data has to reproduce the plot's numbers exactly once filtered."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.db_path = os.path.join(self.temp_dir.name, "table.db")
+        init_db(self.db_path)
+        self.day = datetime.date.today().isoformat()
+        for minute in ("10:05", "10:10", "10:15"):
+            record_usage_deltas(
+                self.db_path, f"{self.day} {minute}", self.day, {"AppA": (100, 10), "AppB": (5, 1)}
+            )
+        # AppC lands in the same bucket as AppA but from a different poll state,
+        # so the bucket itself is classified awake while carrying dark-wake rows.
+        record_usage_deltas(
+            self.db_path,
+            f"{self.day} 10:10",
+            self.day,
+            {"AppC": (50, 5)},
+            gap_classification="dark_wake_only",
+        )
+
+    def _generate(self, name="table.html", **kwargs):
+        out_html = os.path.join(self.temp_dir.name, name)
+        path = generate_html_report(self.db_path, days=30, output_path=out_html, **kwargs)
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+
+    def _payloads(self, name="table.html", **kwargs):
+        content = self._generate(name, **kwargs)
+        return (
+            extract_json_var(content, "viewsData"),
+            extract_json_var(content, "tableData"),
+            content,
+        )
+
+    def test_table_total_equals_the_server_side_grand_total(self):
+        views, table, content = self._payloads()
+
+        table_total = sum(
+            entry["in"][k] + entry["out"][k]
+            for entry in table["series"]
+            for k in range(len(entry["i"]))
+        )
+        view_total = sum(
+            ds["data"][i] or 0 for ds in views["5m"]["datasets"] for i in range(len(ds["data"]))
+        )
+        # The stat cards are server-rendered from the totals query, so the
+        # client-side re-aggregation has to land on exactly that number: if it
+        # drifts, filtering the dashboard silently changes the headline figures.
+        server_total = sum(r["total_bytes"] or 0 for r in query_usage_totals(self.db_path, days=30))
+        self.assertEqual(table_total, view_total)
+        self.assertEqual(table_total, server_total)
+        self.assertIn(format_bytes(server_total), content)
+
+    def test_series_arrays_are_parallel_and_in_bucket_order(self):
+        views, table, _ = self._payloads()
+
+        for entry in table["series"]:
+            lengths = {len(entry[key]) for key in ("i", "in", "out", "s")}
+            self.assertEqual(lengths, {len(entry["i"])}, "series arrays disagree in length")
+
+        # Delta-encoded indices must decode to strictly increasing positions
+        # inside the 5-minute axis.
+        for entry in table["series"]:
+            index = 0
+            for delta in entry["i"]:
+                index += delta
+                self.assertGreaterEqual(index, 0)
+                self.assertLess(index, len(views["5m"]["labels"]))
+
+    def test_bucket_classification_is_carried_once_per_bucket(self):
+        views, table, _ = self._payloads()
+
+        self.assertEqual(len(table["bucketClass"]), len(views["5m"]["labels"]))
+        self.assertEqual(
+            table["bucketClass"],
+            [
+                chartjs_html_generator.CLASSIFICATION_INDEX.get(cls, 0)
+                for cls in views["5m"]["bucketClassification"]
+            ],
+        )
+        # The per-row classification array is gone: it made the table and the
+        # plot disagree on buckets a poll boundary split in two.
+        for entry in table["series"]:
+            self.assertNotIn("c", entry)
+
+    def test_mixed_bucket_takes_the_most_severe_classification(self):
+        views, table, _ = self._payloads()
+
+        labels = views["5m"]["labels"]
+        self.assertEqual(labels, [f"{self.day} 10:05", f"{self.day} 10:10", f"{self.day} 10:15"])
+        # 10:10 holds an awake poll (AppA) and a dark-wake poll (AppC). A bar owns
+        # the whole bucket, so it takes the most severe class present, and the
+        # table has to select that same bucket with the same class.
+        self.assertEqual(views["5m"]["bucketClassification"][1], "dark_wake_only")
+        self.assertEqual(
+            table["bucketClass"][1], chartjs_html_generator.CLASSIFICATION_INDEX["dark_wake_only"]
+        )
+        # The awake rows in that bucket stay in the payload. Dropping them here
+        # would make the unfiltered totals disagree with the database; the filter
+        # decides what to hide, so that the plot and the table always agree.
+        app_a = table["series"][table["apps"].index("AppA")]
+        self.assertEqual(sum(app_a["in"]), 300)
+
+    def test_every_app_in_the_window_gets_a_series(self):
+        _, table, _ = self._payloads()
+
+        self.assertEqual(sorted(table["apps"]), ["AppA", "AppB", "AppC"])
+        self.assertEqual(len(table["series"]), len(table["apps"]))
+        # Ordered by total bytes, descending, as the server-rendered table was.
+        self.assertEqual(table["apps"], ["AppA", "AppC", "AppB"])  # by total, descending
+
+    def test_excluded_classifications_leave_the_payload(self):
+        _, table, _ = self._payloads("excluded.html", exclude_classifications=["dark_wake_only"])
+
+        app_a = table["series"][table["apps"].index("AppA")]
+        self.assertEqual(sum(app_a["in"]), 300)
+        self.assertNotIn("AppC", table["apps"])
+
+    def test_hourly_layers_share_the_five_minute_series_axis(self):
+        views, _, _ = self._payloads()
+
+        labels = [ds["label"] for ds in views["5m"]["datasets"]]
+        for view_key in ("hourly", "daily"):
+            for layer, layer_view in views[view_key]["layers"].items():
+                with self.subTest(view=view_key, layer=layer):
+                    # A layer that drops or reorders series would make the
+                    # client-side combine sum the wrong apps together.
+                    self.assertEqual([ds["label"] for ds in layer_view["datasets"]], labels)
+                    for ds in layer_view["datasets"]:
+                        self.assertEqual(len(ds["data"]), len(views[view_key]["labels"]))
+
+    def test_layers_exist_even_for_a_classification_with_no_traffic(self):
+        # --exclude only pre-unchecks a box; the layer has to stay embedded or the
+        # user could never toggle it back on.
+        views, _, _ = self._payloads("layers.html")
+
+        self.assertNotIn("sleep_then_full_wake", views["5m"]["bucketClassification"])
+        for view_key in ("hourly", "daily"):
+            with self.subTest(view=view_key):
+                self.assertEqual(
+                    sorted(views[view_key]["layers"]),
+                    sorted(chartjs_html_generator.CLASSIFICATIONS),
+                )
+
+    def test_no_unsubstituted_placeholders(self):
+        _, _, content = self._payloads()
+        self.assertNotIn("__TABLE_DATA_JSON__", content)
+        self.assertNotIn("__VIEWS_DATA_JSON__", content)
 
 
 class TestInstallerUserFileHandling(unittest.TestCase):
