@@ -874,6 +874,7 @@
                     const cls = classKey(view.bucketClassification ? view.bucketClassification[at] : null);
                     // Classification filter: per-row classification must be checked
                     if (!inRange(ms[i]) || !checkedCls.has(cls)) continue;
+                    if (!state.showEmptyIntervals && !hasVisibleTraffic(view.datasets, at)) continue;
 
                     filteredLabels.push(labels[i]);
                     filteredCls.push(cls);
@@ -945,6 +946,7 @@
                     continue;
                 }
                 if (!inRange(ms[i])) continue;
+                if (!state.showEmptyIntervals && !hasVisibleTraffic(combinedDatasets, at)) continue;
                 filteredLabels.push(combinedLabels[at]);
                 filteredClassifications.push(perDatasetClassifications[at]);
                 for (let j = 0; j < combinedDatasets.length; j++) {
@@ -959,6 +961,29 @@
             };
             applyChartScale();
             currentChart.update();
+        }
+
+        // Does this label still have traffic to draw, once the traffic-type
+        // filter has been applied?
+        //
+        // A recorded bucket whose traffic the filter leaves at zero still costs a
+        // slot on the axis, and a zero-height bar sitting among real bars reads as
+        // a hole in the data rather than as "nothing matched". The hours in the
+        // middle of a sleep gap are the usual culprit: they hold dark-wake
+        // traffic, so they are on the hourly axis for good, but with only awake
+        // selected every series in them is zero -- and 50 zero-height bars in a
+        // row is what a gap looks like when you have already asked for gaps not
+        // to be drawn.
+        //
+        // So a label with nothing left to plot loses its slot too, unless the
+        // empty-interval control asked for the grid, which then puts the time back
+        // exactly where it belongs. The summary and the table are untouched: a
+        // zero bucket contributes zero to them either way.
+        function hasVisibleTraffic(datasets, index) {
+            for (const ds of datasets) {
+                if (ds.data[index]) return true;
+            }
+            return false;
         }
 
         // ── Vertical axis scale ────────────────────────────────────────────────
