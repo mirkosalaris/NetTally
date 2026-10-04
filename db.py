@@ -147,6 +147,20 @@ def prune_stale_process_states(db_path: str, max_age_seconds: Optional[float] = 
     conn.close()
 
 
+def clear_process_states(db_path: str) -> None:
+    """Delete every process_state row, forcing the next poll to re-baseline.
+
+    Used when collection is paused: the stored byte counters are cumulative per
+    process, so resuming against them would attribute the entire pause window's
+    traffic to the first post-pause poll. Dropping them makes the first poll
+    back a pure baseline sample (delta 0) instead.
+    """
+    conn = get_connection(db_path)
+    with conn:
+        conn.execute("DELETE FROM process_state")
+    conn.close()
+
+
 def record_usage_deltas(
     db_path: str,
     timestamp_5m: str,

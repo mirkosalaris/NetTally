@@ -14,6 +14,7 @@ import pty
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -22,10 +23,12 @@ from unittest.mock import MagicMock, patch
 
 import collector
 import html_generator as chartjs_html_generator
+import pause
 from app_folder import AppFolder
 from collector import check_dark_wake_still_active, detect_and_classify_gap, parse_nettop_proc_id
 from config import DEFAULTS, load_config
 from db import (
+    clear_process_states,
     get_connection,
     init_db,
     load_process_states,
@@ -39,6 +42,13 @@ from db import (
     update_process_states,
 )
 from html_generator import build_coverage_summary, generate_html_report
+from pause import (
+    clear_pause_state,
+    format_duration,
+    parse_duration,
+    read_pause_state,
+    write_pause_state,
+)
 from report import format_bytes, generate_totals_report, parse_exclude_classes
 
 
@@ -1342,6 +1352,484 @@ class TestVendoredChartJs(unittest.TestCase):
             os.path.join(self.root, "templates", "dashboard_template.html"), encoding="utf-8"
         ) as f:
             self.assertIn("__CHART_JS__", f.read())
+
+
+def require_pause_state(path=None):
+    """read_pause_state with the None case asserted away, for terser assertions."""
+    state = read_pause_state(path)
+    if state is None:
+        raise AssertionError(
+            f"expected a pause state file at {path or pause.DEFAULT_PAUSE_STATE_PATH}"
+        )
+    return state
+
+
+class _StopLoop(Exception):
+    """Breaks out of collector.main()'s otherwise infinite polling loop."""
+
+
+class FakeClock:
+    """time.time() with a manually applied offset.
+
+    Advancing the offset between phases simulates a multi-hour pause without
+    making the clock run backwards or fast for anything else in the process.
+    """
+
+    def __init__(self):
+        self.offset = 0.0
+        # Bound up front: while the clock is installed, `time.time` is this method.
+        self._real_time = time.time
+
+    def time(self):
+        return self._real_time() + self.offset
+
+    def advance(self, seconds):
+        self.offset += seconds
+
+
+class ScriptedNettop:
+    """Stands in for fetch_nettop_sample with one app whose counters only climb.
+
+    `bump()` simulates traffic that happens while nobody is watching, which is
+    exactly the case a pause has to survive without misattributing it.
+    """
+
+    def __init__(self, step=1000):
+        self.step = step
+        self.bytes = 0
+        self.calls = 0
+
+    def __call__(self):
+        self.calls += 1
+        self.bytes += self.step
+        return [(4242, "FakeApp", self.bytes, self.bytes)]
+
+    def bump(self, amount):
+        self.bytes += amount
+
+
+class TestPauseDurationParsing(unittest.TestCase):
+    def test_bare_number_is_seconds(self):
+        self.assertEqual(parse_duration("90"), 90)
+
+    def test_single_units(self):
+        self.assertEqual(parse_duration("90s"), 90)
+        self.assertEqual(parse_duration("45m"), 2700)
+        self.assertEqual(parse_duration("2h"), 7200)
+        self.assertEqual(parse_duration("1d"), 86400)
+
+    def test_compound_durations_sum(self):
+        self.assertEqual(parse_duration("1h30m"), 5400)
+        self.assertEqual(parse_duration("3 m 0 s"), 180)
+
+    def test_case_and_spacing_are_forgiving(self):
+        self.assertEqual(parse_duration(" 2H "), 7200)
+
+    def test_rejects_garbage_rather_than_reinterpreting_it(self):
+        """'5x' must fail, not quietly become 5 seconds."""
+        for text in ("", "0", "abc", "5x", "2h!", "1.5h", "-5m", "m"):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                parse_duration(text)
+
+    def test_format_duration_is_compact_and_human_readable(self):
+        cases = {45: "45s", 90: "1m 30s", 3600: "1h", 5400: "1h 30m", 3661: "1h 1m 1s"}
+        for seconds, expected in cases.items():
+            with self.subTest(seconds=seconds):
+                self.assertEqual(format_duration(seconds), expected)
+
+    def test_format_duration_covers_days(self):
+        self.assertEqual(format_duration(86400), "1d")
+        self.assertEqual(format_duration(90000), "1d 1h")
+
+
+class TestPauseStateFile(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.path = os.path.join(self.tmp, "nested", "pause_state.json")
+        os.makedirs(os.path.dirname(self.path))
+
+    def test_round_trip(self):
+        write_pause_state(None, self.path)
+        state = require_pause_state(self.path)
+        self.assertIsNone(state["until_epoch"])
+        self.assertGreater(state["paused_at"], 0)
+
+    def test_timed_pause_records_the_deadline(self):
+        write_pause_state(time.time() + 3600, self.path)
+        state = require_pause_state(self.path)
+        self.assertAlmostEqual(state["until_epoch"], state["paused_at"] + 3600, delta=5)
+
+    def test_write_leaves_no_temp_file_behind(self):
+        """The collector reads this file mid-poll; it must never see a partial one."""
+        write_pause_state(None, self.path)
+        self.assertEqual([n for n in os.listdir(os.path.dirname(self.path)) if ".tmp." in n], [])
+
+    def test_missing_file_means_not_paused(self):
+        self.assertIsNone(read_pause_state(self.path))
+
+    def test_unreadable_file_means_not_paused(self):
+        """A corrupt pause file must never be able to wedge the collector."""
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write("{not json")
+        self.assertIsNone(read_pause_state(self.path))
+
+    def test_wrongly_typed_fields_are_rejected(self):
+        for payload in (
+            "[]",
+            '{"paused_at":"nope"}',
+            '{"paused_at":123,"until_epoch":"soon"}',
+            '{"until_epoch":null}',
+            '{"paused_at":true}',
+        ):
+            with self.subTest(payload=payload):
+                with open(self.path, "w", encoding="utf-8") as f:
+                    f.write(payload)
+                self.assertIsNone(read_pause_state(self.path))
+
+    def test_indefinite_pause_never_expires(self):
+        write_pause_state(None, self.path)
+        state = require_pause_state(self.path)
+        self.assertTrue(pause.pause_is_active(state, now=time.time() + 10**9))
+
+    def test_timed_pause_expires_against_the_wall_clock(self):
+        """Comparing epoch deadlines is what lets a timeout survive a reboot."""
+        write_pause_state(1000.0, self.path)
+        state = require_pause_state(self.path)
+        self.assertTrue(pause.pause_is_active(state, now=999.0))
+        self.assertFalse(pause.pause_is_active(state, now=1000.0))
+        self.assertEqual(pause.seconds_remaining(state, now=900.0), 100.0)
+
+    def test_no_state_is_never_active(self):
+        self.assertFalse(pause.pause_is_active(None))
+        self.assertIsNone(pause.seconds_remaining(None))
+
+    def test_clear_reports_whether_there_was_anything_to_remove(self):
+        write_pause_state(None, self.path)
+        self.assertTrue(clear_pause_state(self.path))
+        self.assertFalse(clear_pause_state(self.path))
+        self.assertIsNone(read_pause_state(self.path))
+
+
+class TestPauseCli(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.path = os.path.join(self.tmp, "pause_state.json")
+
+    def _run(self, *args):
+        result = subprocess.run(
+            [sys.executable, "pause.py", *args, "--state", self.path],
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            capture_output=True,
+            text=True,
+        )
+        return result
+
+    def test_pause_without_duration_pauses_indefinitely(self):
+        result = self._run("pause")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("indefinitely", result.stdout)
+        self.assertIsNone(require_pause_state(self.path)["until_epoch"])
+
+    def test_pause_with_duration_sets_a_deadline(self):
+        result = self._run("pause", "--for", "2h")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = require_pause_state(self.path)
+        self.assertAlmostEqual(state["until_epoch"] - state["paused_at"], 7200, delta=5)
+
+    def test_bad_duration_is_a_usage_error(self):
+        result = self._run("pause", "--for", "5x")
+        self.assertEqual(result.returncode, 2)
+        self.assertIsNone(read_pause_state(self.path))
+
+    def test_pausing_again_replaces_the_previous_deadline(self):
+        self._run("pause")
+        result = self._run("pause", "--for", "45m")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Already paused", result.stdout)
+        state = require_pause_state(self.path)
+        self.assertAlmostEqual(state["until_epoch"] - state["paused_at"], 2700, delta=5)
+
+    def test_resume_clears_the_pause(self):
+        self._run("pause", "--for", "2h")
+        result = self._run("resume")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Resumed tracking", result.stdout)
+        self.assertIsNone(read_pause_state(self.path))
+
+    def test_resume_when_not_paused_is_a_no_op(self):
+        result = self._run("resume")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("was not paused", result.stdout)
+
+    def test_state_reports_paused_and_active(self):
+        self.assertIn("active", self._run("state").stdout)
+        self._run("pause")
+        self.assertIn("PAUSED", self._run("state").stdout)
+
+    def test_state_json_is_machine_readable(self):
+        self._run("pause", "--for", "2h")
+        payload = json.loads(self._run("state", "--format", "json").stdout)
+        self.assertTrue(payload["paused"])
+        self.assertGreater(payload["until_epoch"], time.time())
+        self.assertGreater(payload["seconds_remaining"], 0)
+
+
+class TestCollectorHonorsPause(unittest.TestCase):
+    """End-to-end behavior of the pause state inside the collector's poll loop."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.db = os.path.join(self.tmp, "usage.db")
+        init_db(self.db)
+        self.state_path = os.path.join(self.tmp, "pause_state.json")
+
+        self.clock = FakeClock()
+        self.nettop = ScriptedNettop()
+        # Point the module default at a temp file so the real installed pause
+        # state is never touched by a test run.
+        patcher = patch.object(pause, "DEFAULT_PAUSE_STATE_PATH", self.state_path)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(setattr, collector, "RUNNING", True)
+
+    def _run_cycles(self, count, pause_at=None, resume_at=None, pause_bytes=0, pause_seconds=7200):
+        """Run exactly `count` iterations of one collector.main() polling loop.
+
+        `pause_at` / `resume_at` are 1-based cycle numbers at which the pause
+        state file is written / cleared, and `pause_bytes` is traffic that
+        accumulates while nobody is polling. They fire from inside a *single*
+        main() run on purpose: the collector's in-memory poll timing is what
+        decides whether the pause is later mistaken for a sleep, and that state
+        only exists within one process, exactly as in production.
+        """
+
+        def scripted_read_pause_state(state_path=None):
+            # main() calls this exactly once per loop iteration, so it is both
+            # the hook that scripts the transitions and the one place the test
+            # can bound an otherwise infinite loop.
+            self._cycle += 1
+            if self._cycle > count:
+                raise _StopLoop
+            if self._cycle == pause_at:
+                write_pause_state(None, self.state_path)
+                self.nettop.bump(pause_bytes)
+                self.clock.advance(pause_seconds)
+            elif self._cycle == resume_at:
+                clear_pause_state(self.state_path)
+            return read_pause_state(state_path)
+
+        self._cycle = 0
+        collector.RUNNING = True
+        with (
+            patch.object(sys, "argv", ["collector.py", "--db", self.db, "--interval", "1"]),
+            patch.object(collector, "setup_logging"),
+            patch.object(collector, "read_pause_state", scripted_read_pause_state),
+            patch.object(collector, "fetch_nettop_sample", self.nettop),
+            patch.object(collector.time, "sleep", lambda _seconds: None),
+            patch.object(collector.time, "time", self.clock.time),
+        ):
+            with contextlib.suppress(_StopLoop):
+                collector.main()
+        return self._cycle
+
+    def _total_bytes(self):
+        conn = get_connection(self.db)
+        with conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(bytes_in + bytes_out), 0) AS total FROM usage_5m"
+            ).fetchone()
+        conn.close()
+        return row["total"]
+
+    def _classifications(self):
+        conn = get_connection(self.db)
+        with conn:
+            rows = conn.execute("SELECT DISTINCT gap_classification FROM usage_5m").fetchall()
+        conn.close()
+        return {row["gap_classification"] for row in rows}
+
+    def test_records_usage_when_not_paused(self):
+        self._run_cycles(3)
+        self.assertEqual(self.nettop.calls, 3)
+        self.assertGreater(self._total_bytes(), 0)
+
+    def test_paused_collector_neither_polls_nor_writes(self):
+        """Cycles 3-6 are paused; only the two before and nothing after should poll."""
+        self._run_cycles(6, pause_at=3, resume_at=99)
+        self.assertEqual(self.nettop.calls, 2, "paused cycles still called nettop")
+
+    def test_pause_writes_no_usage_rows(self):
+        self._run_cycles(2)
+        bytes_after_two = self._total_bytes()
+        self._run_cycles(6, pause_at=1, resume_at=99)
+        self.assertEqual(self._total_bytes(), bytes_after_two)
+
+    def test_resume_does_not_dump_the_pause_window_into_one_bucket(self):
+        """The regression this feature exists to prevent.
+
+        Byte counters are cumulative, so polling after a pause against stale
+        baselines would attribute the whole window's traffic to a single 5-minute
+        bucket -- which the existing gap classifier would then stamp as awake.
+        Cycles: 1-2 active, 3-4 paused, 5-6 active again.
+        """
+        self._run_cycles(6, pause_at=3, resume_at=5, pause_bytes=50_000_000)
+
+        total = self._total_bytes()
+        self.assertGreater(total, 0, "recording did not resume")
+        self.assertLess(total, 50_000_000, "the 50 MB pause window leaked into usage_5m")
+
+    def test_pause_stops_recording_even_with_traffic_flowing(self):
+        """The paused window is a hole in the data, by design."""
+        self._run_cycles(4, pause_at=2, resume_at=99, pause_bytes=50_000_000)
+
+        self.assertEqual(self.nettop.calls, 1, "only the pre-pause cycle should have polled")
+        self.assertLess(self._total_bytes(), 50_000_000)
+
+    def test_resume_does_not_run_gap_detection(self):
+        """A deliberate pause is not a sleep, so pmset must not be consulted.
+
+        Without last_poll_epoch advancing through the paused cycles, the resume
+        poll looks two hours late and the collector would go run pmset over the
+        pause window.
+        """
+        with patch.object(collector, "detect_and_classify_gap") as detect:
+            self._run_cycles(6, pause_at=3, resume_at=5)
+        detect.assert_not_called()
+        self.assertEqual(self._classifications(), {None})
+
+    def test_expired_pause_resumes_without_help(self):
+        self._run_cycles(1)
+        calls_before = self.nettop.calls
+        write_pause_state(self.clock.time() - 1, self.state_path)
+
+        self._run_cycles(1)
+
+        self.assertEqual(self.nettop.calls, calls_before + 1)
+        self.assertIsNone(
+            read_pause_state(self.state_path), "an expired pause file should be cleaned up"
+        )
+
+    def test_pause_state_is_left_to_the_status_command_not_the_database(self):
+        """A pause is not a sleep: nothing about it may reach usage_5m.
+
+        It is deliberately *not* appended to the write-only `gaps` audit trail
+        either. Doing so would depend on the collector observing both ends of the
+        pause, which silently loses the row whenever launchd restarts the daemon
+        in between -- incomplete audit data is worse than none. collector.log and
+        `nettally status` already report the window.
+        """
+        self._run_cycles(2)
+        write_pause_state(None, self.state_path)
+        self.clock.advance(3600)
+        self._run_cycles(2)
+        clear_pause_state(self.state_path)
+        self._run_cycles(2)
+
+        conn = get_connection(self.db)
+        with conn:
+            gaps = conn.execute("SELECT classification FROM gaps").fetchall()
+            usage_classes = conn.execute(
+                "SELECT DISTINCT gap_classification FROM usage_5m"
+            ).fetchall()
+        conn.close()
+
+        self.assertEqual(gaps, [], "a pause must not create a gap row")
+        self.assertEqual({row["gap_classification"] for row in usage_classes}, {None})
+
+    def test_pausing_drops_the_byte_baselines(self):
+        """They are what would otherwise turn the pause window into one bucket."""
+        self._run_cycles(2)
+        self.assertNotEqual(load_process_states(self.db), {})
+
+        write_pause_state(None, self.state_path)
+        self._run_cycles(1)
+
+        self.assertEqual(load_process_states(self.db), {})
+
+    def test_once_refuses_to_poll_while_paused(self):
+        write_pause_state(None, self.state_path)
+        buffer = io.StringIO()
+        with (
+            patch.object(sys, "argv", ["collector.py", "--db", self.db, "--once"]),
+            patch.object(collector, "setup_logging"),
+            patch.object(collector, "fetch_nettop_sample", self.nettop),
+            contextlib.redirect_stdout(buffer),
+        ):
+            collector.main()
+
+        self.assertEqual(self.nettop.calls, 0)
+        self.assertEqual(self._total_bytes(), 0)
+        self.assertIn("paused", buffer.getvalue().lower())
+
+    def test_restarting_during_a_pause_still_recovers_cleanly(self):
+        """launchd can restart the daemon at any time, including mid-pause."""
+        self._run_cycles(2)
+        bytes_before = self._total_bytes()
+        write_pause_state(None, self.state_path)
+        self.clock.advance(3600)
+        self.nettop.bump(20_000_000)
+        self._run_cycles(1)
+
+        # Fresh process, same DB, still paused: nothing stale should survive.
+        states = load_process_states(self.db)
+        self.assertEqual(states, {})
+
+        clear_pause_state(self.state_path)
+        self._run_cycles(2)
+        self.assertLess(self._total_bytes() - bytes_before, 10_000)
+
+
+class TestClearProcessStates(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.db = os.path.join(self.tmp, "usage.db")
+        init_db(self.db)
+
+    def test_removes_every_baseline(self):
+        update_process_states(self.db, {(1, "App"): (10, 20, time.time())})
+        self.assertEqual(len(load_process_states(self.db)), 1)
+
+        clear_process_states(self.db)
+
+        self.assertEqual(load_process_states(self.db), {})
+
+    def test_is_safe_on_an_empty_table(self):
+        clear_process_states(self.db)
+        clear_process_states(self.db)
+        self.assertEqual(load_process_states(self.db), {})
+
+
+class TestPauseIsDeployedWithTheRestOfTheRuntime(unittest.TestCase):
+    """collector.py imports pause.py, so a deploy without it cannot start the daemon."""
+
+    def setUp(self):
+        self.root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def _read(self, name):
+        with open(os.path.join(self.root, name), encoding="utf-8") as f:
+            return f.read()
+
+    def test_installer_copies_pause_py(self):
+        self.assertIn('cp "$SCRIPT_DIR/pause.py" "$APP_DIR/"', self._read("install.sh"))
+
+    def test_uninstaller_removes_pause_py_and_the_pause_state(self):
+        source = self._read("uninstall.sh")
+        self.assertIn("$APP_DIR/pause.py", source)
+        self.assertIn("$APP_DIR/pause_state.json", source)
+
+    def test_wrapper_exposes_pause_and_resume(self):
+        wrapper = self._read("nettally")
+        self.assertIn('pause.py" pause', wrapper)
+        self.assertIn('pause.py" resume', wrapper)
+        self.assertIn("pause ", wrapper)
+        self.assertIn("resume ", wrapper)
+
+    def test_wrapper_status_shows_the_pause_state(self):
+        self.assertIn('pause.py" state', self._read("nettally"))
 
 
 if __name__ == "__main__":

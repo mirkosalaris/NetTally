@@ -14,6 +14,7 @@ A lightweight, local-only background daemon and CLI utility for macOS that recor
 - **No Sudo Required**: Uses macOS `nettop` in non-elevated user mode and runs seamlessly as a background `LaunchAgent`.
 - **Smart Process Folding**: Groups helper processes (e.g., `Google Chrome Helper`, `Claude Helper`, `Code Helper`) into clean app names using configurable rules in `app_map.json`.
 - **Sleep/Dark-Wake Classification**: Retroactively classifies polling gaps caused by sleep or dark-wake via `pmset` logs, so post-wake byte spikes aren't misread as a single instant of real traffic, and labels 5-minute buckets accordingly.
+- **Pausing**: Stop recording on demand — indefinitely or with a timeout (`nettally pause --for 2h`). A timed pause resumes by itself, even across a reboot.
 - **CLI & Interactive HTML Reports**: Query history via terminal tables, CSV, JSON, or launch a multi-resolution interactive HTML chart dashboard.
 
 ---
@@ -93,6 +94,8 @@ To check if the daemon is active and view recent logs:
 ```bash
 ./nettally status
 ```
+
+It also reports whether tracking is currently paused.
 
 #### Logs
 
@@ -225,6 +228,81 @@ the database:
 
 ---
 
+## Pausing Tracking
+
+To stop recording without uninstalling the daemon:
+
+```bash
+# pause indefinitely, until you say otherwise
+./nettally pause
+
+# resume
+./nettally resume
+```
+
+Or pause for a fixed time and let it resume itself:
+
+```bash
+./nettally pause --for 2h
+```
+
+`--for` accepts a bare number of seconds or a number with an `s`/`m`/`h`/`d` unit, and
+units can be combined: `90`, `90s`, `45m`, `2h`, `1h30m`, `1d`. Garbage (`5x`, `2h!`,
+`1.5h`) is rejected rather than reinterpreted.
+
+Pausing again while paused replaces the previous deadline, so you can extend or shorten a
+pause without resuming first.
+
+```bash
+./nettally pause --for 15m
+./nettally pause --for 2h     # "Already paused (resumes in 15m); replacing it..."
+```
+
+`./nettally status` shows the current state, including how long is left on a timed pause:
+
+```
+=== NetTally Service Status ===
+-  0  com.nettally.daemon
+Tracking is PAUSED (resumes in 1h 47m).
+```
+
+### What a pause does and does not record
+
+While paused, the collector does not call `nettop` at all and writes nothing to the
+database — no `usage_5m` rows are created for that window. The pause is a **hole in the
+data**.
+
+Two further consequences worth knowing about:
+
+- **The traffic that happens during a pause is not counted**, and cannot be recovered
+  afterwards. That is the point of pausing.
+- **At most one polling interval of usage is lost at each boundary.** Per-process byte
+  counters are cumulative, so the collector drops its baselines when the pause starts and
+  the first poll back is a pure re-baselining sample recording zero bytes. Without that,
+  resuming would attribute the whole window's traffic to a single 5-minute bucket and the
+  existing gap classifier would label it awake — a large fake spike.
+
+A pause is also *not* treated as sleep: because the collector keeps advancing its poll
+timer while idle, resuming does not trigger `pmset` gap classification, and no bucket is
+tagged `dark_wake_only` or `unknown_gap`.
+
+### Timed pauses survive a reboot
+
+There is no background timer process. The deadline is an epoch timestamp stored in
+`~/Library/Application Support/NetTally/pause_state.json`, and the collector's own polling
+loop is what notices it has passed. So if the machine is powered off for longer than the
+pause, tracking resumes on the collector's first cycle after it comes back.
+
+An indefinite pause survives a reboot too — only `nettally resume` lifts it.
+
+### Scope
+
+Pausing is global: it stops recording for every app, and there is no per-app pause. The
+pause state is a machine-level control, not a property of any one database, so it applies
+whichever database the collector is pointed at.
+
+---
+
 ## System Architecture
 
 ```
@@ -233,10 +311,12 @@ the database:
   ├── app_map.json      # Process canonicalization & folding configuration
   ├── config.json       # Polling / reporting configuration
   ├── python_path       # Python interpreter pinned at install time
+  ├── pause_state.json  # Present only while tracking is paused (see "Pausing Tracking")
   ├── collector.py      # Background nettop poller & delta engine
   ├── db.py             # SQLite database interface with 5m/hourly/daily query helpers
   ├── app_folder.py     # Helper process canonicalization logic
   ├── report.py         # CLI text reporting
+  ├── pause.py          # Pause state file + `pause` / `resume` / `state` commands
   ├── html_generator.py # Multi-resolution HTML dashboard builder
   ├── templates/        # HTML dashboard template
   ├── nettally          # CLI wrapper (symlinked onto PATH as `nettally`)

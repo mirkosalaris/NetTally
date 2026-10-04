@@ -23,6 +23,7 @@ from typing import Optional
 from app_folder import fold_app_name
 from config import load_config
 from db import (
+    clear_process_states,
     get_db_path,
     init_db,
     load_process_states,
@@ -32,6 +33,7 @@ from db import (
     record_usage_deltas,
     update_process_states,
 )
+from pause import clear_pause_state, describe_pause, pause_is_active, read_pause_state
 
 logger = logging.getLogger(__name__)
 
@@ -334,6 +336,29 @@ def check_dark_wake_still_active(db_path: str, since_epoch: float, now_epoch: fl
     return classification
 
 
+def _drop_byte_baselines(
+    db_path: str,
+    process_states: dict[tuple[int, str], tuple[int, int, float]],
+) -> None:
+    """Drop the byte baselines when entering a pause.
+
+    They are cumulative per-process counters, so keeping them across a pause
+    would make the first poll back count every byte transferred while paused as
+    if it were one interval of real traffic. Clearing them turns that poll into
+    a pure baseline sample (delta 0) and costs at most one interval of usage at
+    the resume boundary. Doing it on the way *in* also makes a restart during the
+    pause safe: there is nothing stale left for load_process_states() to pick up.
+
+    Failures are logged rather than raised -- a pause must never stop the
+    collector from polling.
+    """
+    try:
+        clear_process_states(db_path)
+        process_states.clear()
+    except Exception:
+        logger.exception("Failed to clear byte baselines while pausing")
+
+
 def main() -> None:
     """Run the collector daemon (or a single poll with --once)."""
     cfg = load_config()
@@ -370,36 +395,87 @@ def main() -> None:
     last_prune = time.time()
     last_poll_epoch: Optional[float] = None
     last_classification: Optional[str] = None
+    pausing = False
 
     if args.once:
-        delta_in, delta_out = poll_once(db_path, process_states, config_path=args.config)
-        print(f"Single poll complete. Delta in: {delta_in} bytes, Delta out: {delta_out} bytes.")
+        pause_state = read_pause_state()
+        if pause_is_active(pause_state):
+            # One message, one print: the AST test in tests/test_nettally.py
+            # enforces that stdout writes stay inside this branch, so build the
+            # line here rather than adding a second print call.
+            summary = (
+                f"Tracking is paused ({describe_pause(pause_state)}); no sample taken. "
+                "Run `nettally resume` first."
+            )
+        else:
+            delta_in, delta_out = poll_once(db_path, process_states, config_path=args.config)
+            summary = (
+                f"Single poll complete. Delta in: {delta_in} bytes, Delta out: {delta_out} bytes."
+            )
+        print(summary)
         return
 
     while RUNNING:
         start_time = time.time()
         gap_class: Optional[str] = None
 
-        if last_poll_epoch is not None:
-            time_diff = start_time - last_poll_epoch
-            gap_threshold = args.interval * cfg.get("gap_threshold_multiplier", 3)
-            if time_diff > gap_threshold:
-                gap_class = detect_and_classify_gap(db_path, last_poll_epoch, start_time)
-            elif last_classification == "dark_wake_only":
-                # This poll arrived on time, but the previous one was still dark-waking.
-                gap_class = check_dark_wake_still_active(db_path, last_poll_epoch, start_time)
+        # The pause deadline is checked here rather than by a separate timer, so a
+        # timeout costs nothing while it is running and still expires correctly if
+        # the machine was powered off for longer than the pause.
+        pause_state = read_pause_state()
+        if pause_state is not None and not pause_is_active(pause_state, start_time):
+            logger.info("Pause timeout elapsed; resuming tracking.")
+            try:
+                clear_pause_state()
+            except OSError:
+                logger.exception("Failed to clear the expired pause state file")
+            pause_state = None
 
-        last_poll_epoch = start_time
-        last_classification = gap_class
+        if pause_state is not None:
+            # Paused: no nettop call and no writes. last_poll_epoch still advances
+            # so this deliberate idle window is not later mistaken for sleep --
+            # otherwise the resume poll would run pmset and stamp the first
+            # post-pause bucket `unknown_gap`, which reads as awake traffic.
+            last_poll_epoch = start_time
+            last_classification = None
 
-        try:
-            delta_in, delta_out = poll_once(
-                db_path, process_states, config_path=args.config, gap_classification=gap_class
-            )
-            if delta_in > 0 or delta_out > 0:
-                logger.info("Sample recorded: +%d B in, +%d B out", delta_in, delta_out)
-        except Exception:
-            logger.exception("Error during polling cycle")
+            if not pausing:
+                pausing = True
+                _drop_byte_baselines(db_path, process_states)
+                until = pause_state.get("until_epoch")
+                deadline = (
+                    "indefinite"
+                    if until is None
+                    else f"until {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(float(until)))}"
+                )
+                logger.info("Tracking is paused (%s); no usage will be recorded.", deadline)
+        else:
+            if pausing:
+                # Resumed by hand or by timeout; either way the baselines went
+                # when the pause was entered, so this poll re-baselines itself.
+                pausing = False
+                logger.info("Resumed tracking.")
+
+            if last_poll_epoch is not None:
+                time_diff = start_time - last_poll_epoch
+                gap_threshold = args.interval * cfg.get("gap_threshold_multiplier", 3)
+                if time_diff > gap_threshold:
+                    gap_class = detect_and_classify_gap(db_path, last_poll_epoch, start_time)
+                elif last_classification == "dark_wake_only":
+                    # This poll arrived on time, but the previous one was still dark-waking.
+                    gap_class = check_dark_wake_still_active(db_path, last_poll_epoch, start_time)
+
+            last_poll_epoch = start_time
+            last_classification = gap_class
+
+            try:
+                delta_in, delta_out = poll_once(
+                    db_path, process_states, config_path=args.config, gap_classification=gap_class
+                )
+                if delta_in > 0 or delta_out > 0:
+                    logger.info("Sample recorded: +%d B in, +%d B out", delta_in, delta_out)
+            except Exception:
+                logger.exception("Error during polling cycle")
 
         # Prune stale process state once every prune_interval
         if time.time() - last_prune > cfg["process_state_prune_interval_seconds"]:

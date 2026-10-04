@@ -21,8 +21,8 @@ itself is version-controlled and hosted on GitHub (origin), and commits are push
   (the LaunchAgent plist's `ProgramArguments` points at `collector.py` there).
 - Once installed, the `nettally` CLI on your PATH also runs from there: `install.sh` copies
   `collector.py`, `db.py`, `config.py`, `app_folder.py`, `report.py`, `html_generator.py`,
-  `templates/` (`dashboard_template.html`, the vendored `chart.umd.js`, and its license), the
-  `nettally` wrapper, `install.sh`/`uninstall.sh`, and the plist template
+  `pause.py`, `templates/` (`dashboard_template.html`, the vendored `chart.umd.js`, and its
+  license), the `nettally` wrapper, `install.sh`/`uninstall.sh`, and the plist template
   into Application Support, and symlinks `nettally` onto your PATH (into `~/.local/bin`
   — created and added to `$PATH` in your shell profile if not already there). Deleting the
   source folder after install is fine. (See `docs/decisions/0006-...`; it resolves the open
@@ -35,7 +35,7 @@ itself is version-controlled and hosted on GitHub (origin), and commits are push
   relative to its own (symlink-resolved) location, so it keeps running the workspace copies of
   `report.py` / `html_generator.py` / `collector.py` directly.
 - **Consequence: after editing any of `collector.py`, `db.py`, `config.py`, `app_folder.py`,
-  `report.py`, `html_generator.py`, `templates/dashboard_template.html`, or
+  `report.py`, `html_generator.py`, `pause.py`, `templates/dashboard_template.html`, or
   `templates/chart.umd.js`, you must re-run `./install.sh` for the deployed daemon **and**
   the PATH CLI to pick up the change.** Restarting the LaunchAgent without re-running
   `install.sh` just relaunches the old copy. The workspace `./nettally` sees edits
@@ -46,6 +46,12 @@ itself is version-controlled and hosted on GitHub (origin), and commits are push
 - The database (`usage.db`, default path `~/Library/Application Support/NetTally/usage.db`,
   overridable via `--db`) is a single shared file regardless of which copy of the code touched
   it — there's no duplicate-database confusion, only duplicate-*code* confusion.
+- `pause_state.json` sits next to `config.json` in the same directory, and is created *and
+  removed* by the user-facing `nettally pause` / `nettally resume`. It's a control-plane
+  file, deliberately **not** a row in `usage.db`: `nettally pause` then works even when the
+  database is locked or corrupt, and `uninstall.sh`'s explicit `rm -f` list removes it, so a
+  `usage.db` preserved by a plain uninstall can't resurrect a stale "paused" flag on the next
+  install. 
 
 ## Python runtime contract
 
@@ -80,6 +86,7 @@ itself is version-controlled and hosted on GitHub (origin), and commits are push
 nettop (30s poll) → collector.py → usage_5m (SQLite, 5-min buckets, per app)
                                   ↳ power_events / gaps (pmset -g log derived, for sleep/wake classification)
 report.py / html_generator.py → read usage_5m via db.py's query_usage_by_{5m,hour,day} → CLI / HTML dashboard
+pause.py → pause_state.json → collector.py loop skips polling while paused (hole, not a label)
 ```
 
 - `gaps` and `power_events` are **write-only** — the collector inserts into them, and nothing
@@ -104,6 +111,32 @@ report.py / html_generator.py → read usage_5m via db.py's query_usage_by_{5m,h
   specifically so these two functions didn't need to change. Don't change their signature or
   default (unfiltered) behavior without checking every caller.
 
+## Pausing (`pause.py`)
+
+`nettally pause` / `nettally resume` (and `pause.py state`, which `nettally status` calls)
+manipulate one small JSON file, `pause_state.json`. The collector's loop reads it once per
+cycle at `collector.py`'s `read_pause_state()` call, which is also what makes a timed pause
+need no timer process. Three invariants carry the whole design; don't break them without
+reworking the tests that encode them (`TestCollectorHonorsPause`):
+
+- **A pause is a hole, not a label.** Nothing is recorded while paused, and nothing about a
+  pause reaches the database — in particular it never becomes a `gap_classification` value or
+  a `gaps` row. A pause displays exactly as a long sleep gap does. 
+- **`process_state` is cleared on the way *in*, not on the way out.** Byte counters are
+  cumulative, so resuming against baselines from before the pause would turn the whole window
+  into a single 5-minute bucket that reads as awake traffic — the exact bug this feature exists
+  to prevent. Clearing at entry also makes a `launchd` restart *during* a pause safe, and makes
+  the resume path an unremarkable ordinary poll. Don't "optimize" this into a re-baseline at
+  exit.
+- **The paused branch still advances `last_poll_epoch`.** A deliberate pause is not a sleep, so
+  the resume poll must not look late; otherwise it triggers `pmset` gap detection over the pause
+  window and stamps the first post-pause bucket `unknown_gap`, which folds into `awake`.
+
+There is deliberately **no** `gaps` audit row for a pause window. Writing one needs the
+collector to observe both ends of the pause, which silently drops the row if launchd restarts
+the daemon in between — and incomplete audit data is worse than none. `collector.log` and
+`nettally status` cover it instead.
+
 ## Before you consider a change done
 
 1. Run the tests: `python3 -m unittest discover -s tests` (repo root), or `make test`. All of
@@ -116,8 +149,8 @@ report.py / html_generator.py → read usage_5m via db.py's query_usage_by_{5m,h
    of silently growing `ignore` lists or adding `# type: ignore` (both are kept minimal
    deliberately).
 3. If you touched any of the deployed files (`collector.py` / `db.py` / `config.py` /
-   `app_folder.py` / `report.py` / `html_generator.py` / `templates/`): tell the user (or
-   run, if you can) `./install.sh` — see the deployed-copy section above.
+   `app_folder.py` / `report.py` / `html_generator.py` / `pause.py` / `templates/`): tell the
+   user (or run, if you can) `./install.sh` — see the deployed-copy section above.
 4. If you touched anything sleep/wake/gap-classification related, verify against real data if
    at all possible (a crafted repro or a real `usage.db` snapshot), not just unit tests with
    mocked `pmset` output. This codebase's nastiest bugs were all "looks right in isolation, but

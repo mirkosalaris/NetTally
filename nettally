@@ -47,9 +47,18 @@ case "$1" in
         shift
         $PYTHON "$SCRIPT_DIR/collector.py" "$@"
         ;;
+    pause)
+        shift
+        $PYTHON "$SCRIPT_DIR/pause.py" pause "$@"
+        ;;
+    resume)
+        shift
+        $PYTHON "$SCRIPT_DIR/pause.py" resume "$@"
+        ;;
     status)
         echo "=== NetTally Service Status ==="
         launchctl list 2>/dev/null | grep -E "com\.nettally\.daemon" || echo "Service is not currently loaded in launchctl."
+        $PYTHON "$SCRIPT_DIR/pause.py" state 2>/dev/null || echo "Tracking state unknown (pause.py unavailable)."
         LOG_DIR="$HOME/Library/Logs/NetTally"
         if [ -s "$LOG_DIR/collector.log" ]; then
             echo ""
@@ -80,7 +89,9 @@ case "$1" in
         echo "Commands:"
         echo "  report      Generate CLI text usage report (--days 30, --by-day, --by-hour, --by-5m, --app, etc.)"
         echo "  html        Generate and open interactive multi-resolution HTML dashboard"
-        echo "  status      Check background service status and recent log output"
+        echo "  status      Check background service status, pause state, and recent log output"
+        echo "  pause       Stop recording usage (indefinitely, or --for 2h / --for 45m / --for 1h30m)"
+        echo "  resume      Start recording usage again immediately"
         echo "  run-once    Execute a single nettop polling cycle for testing"
         echo "  run-daemon  Start collector daemon manually in foreground"
         echo "  install     Install LaunchAgent background service"
