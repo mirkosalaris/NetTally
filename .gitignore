@@ -33,3 +33,6 @@ dashboard.html
 .idea/
 *.swp
 *.swo
+
+# Opencode
+opencode.json
