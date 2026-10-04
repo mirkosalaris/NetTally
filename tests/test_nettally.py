@@ -1472,7 +1472,12 @@ class TestPauseStateFile(unittest.TestCase):
         """A corrupt pause file must never be able to wedge the collector."""
         with open(self.path, "w", encoding="utf-8") as f:
             f.write("{not json")
-        self.assertIsNone(read_pause_state(self.path))
+        # assertLogs both keeps logging's last-resort handler from leaking the
+        # warning to the test run's real stderr and pins the one diagnostic an
+        # operator would grep collector.log for.
+        with self.assertLogs("pause", level="WARNING") as logs:
+            self.assertIsNone(read_pause_state(self.path))
+        self.assertTrue(any("unreadable pause state file" in line for line in logs.output))
 
     def test_wrongly_typed_fields_are_rejected(self):
         for payload in (
@@ -1485,7 +1490,13 @@ class TestPauseStateFile(unittest.TestCase):
             with self.subTest(payload=payload):
                 with open(self.path, "w", encoding="utf-8") as f:
                     f.write(payload)
-                self.assertIsNone(read_pause_state(self.path))
+                # Every malformed shape has to be rejected *and* say so: a silent
+                # fallback would leave a corrupt file looking like a deliberate
+                # pause to whoever reads the log.
+                with self.assertLogs("pause", level="WARNING") as logs:
+                    self.assertIsNone(read_pause_state(self.path))
+                self.assertEqual(len(logs.output), 1)
+                self.assertIn("pause state file", logs.output[0])
 
     def test_indefinite_pause_never_expires(self):
         write_pause_state(None, self.path)
