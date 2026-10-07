@@ -68,10 +68,18 @@ case "$1" in
             echo "Full log: $LOG_DIR/collector.log (older entries rotate to collector.log.1, .2, ...)"
         fi
         # Non-empty only when the collector died before it could open its own
-        # log -- an import error, a bad interpreter, a failed --db path.
+        # log -- an import error, a bad interpreter, a failed --db path. The
+        # timestamp matters because such a file is never rewritten by a healthy
+        # daemon, so an untouched pre-logging-rewrite one would otherwise read
+        # as a current crash. BSD stat (not `date -r`, which takes epoch here).
         if [ -s "$LOG_DIR/collector.err.log" ]; then
             echo ""
-            echo "--- Startup/Crash Output (last 20 lines) ---"
+            ERR_MTIME=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M' "$LOG_DIR/collector.err.log" 2>/dev/null)
+            if [ -n "$ERR_MTIME" ]; then
+                echo "--- Startup/Crash Output (last 20 lines, last written $ERR_MTIME) ---"
+            else
+                echo "--- Startup/Crash Output (last 20 lines) ---"
+            fi
             tail -n 20 "$LOG_DIR/collector.err.log"
         fi
         ;;

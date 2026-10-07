@@ -1261,6 +1261,55 @@ class TestDaemonPlistAndStatusOutput(unittest.TestCase):
             return f.read()
 
 
+class TestStatusErrLogLabel(unittest.TestCase):
+    """`nettally status` must not present a stale collector.err.log as current.
+
+    The err log is only written by a failure before logging is configured, so a
+    healthy daemon never rewrites it: without a timestamp the pre-logging-rewrite
+    file would sit under "Startup/Crash Output" forever.
+    """
+
+    def setUp(self):
+        self.root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.log_dir = os.path.join(self.tmp, "Library", "Logs", "NetTally")
+        os.makedirs(self.log_dir)
+        self.err_log = os.path.join(self.log_dir, "collector.err.log")
+
+    def _status(self):
+        env = dict(os.environ, HOME=self.tmp)
+        proc = subprocess.run(
+            [os.path.join(self.root, "nettally"), "status"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+            timeout=30,
+        )
+        return proc.returncode, proc.stdout.decode()
+
+    def test_status_labels_the_err_log_with_its_last_written_time(self):
+        with open(self.err_log, "w", encoding="utf-8") as f:
+            f.write("Error running nettop: Command timed out after 10 seconds\n")
+        stale = datetime.datetime(2026, 9, 26, 10, 1).timestamp()
+        os.utime(self.err_log, (stale, stale))
+
+        returncode, out = self._status()
+
+        self.assertEqual(returncode, 0, out)
+        self.assertIn("Startup/Crash Output", out)
+        self.assertIn("last written 2026-09-26 10:01", out)
+
+    def test_status_omits_the_block_when_the_err_log_is_empty(self):
+        with open(self.err_log, "w", encoding="utf-8") as f:
+            f.write("")
+
+        returncode, out = self._status()
+
+        self.assertEqual(returncode, 0, out)
+        self.assertNotIn("Startup/Crash Output", out)
+
+
 class TestVendoredChartJs(unittest.TestCase):
     """The dashboard must be self-contained: no CDN, nothing fetched at view time."""
 
