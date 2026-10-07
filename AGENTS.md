@@ -105,11 +105,11 @@ pause.py → pause_state.json → collector.py loop skips polling while paused (
   `'sleep_then_full_wake'`, `'unknown_gap'`. `'unknown_gap'` is deliberately folded into the
   `'awake'` bucket everywhere it's filtered (db.py and the dashboard JS) — don't reintroduce a
   4th visible category without updating both places.
-- `query_usage_by_hour(db_path, ...)` and `query_usage_by_day(db_path, ...)` signatures and
-  return shape are a deliberate, explicit constraint from `report.py`'s existing callers — the
-  classification-aware rollups (decision 0003) were built as an *additional* layered query path
-  specifically so these two functions didn't need to change. Don't change their signature or
-  default (unfiltered) behavior without checking every caller.
+- `query_usage_by_hour(db_path, ...)` and `query_usage_by_day(db_path, ...)` have a delicate
+  signature. `report.py`'s callers depend on the current parameter list and return shape.
+  Concretely: adding a new optional parameter whose default preserves today's behavior is
+  fine; reordering or repurposing existing parameters, renaming return keys, or changing the
+  defaults are delicate operations. Either way, check every caller first.
 
 ## Pausing (`pause.py`)
 
