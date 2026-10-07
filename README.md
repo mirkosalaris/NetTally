@@ -218,6 +218,10 @@ On-chart controls, all of them live (nothing requires a regeneration):
   classification is recomputed against what is actually still displayed: a bar is only
   marked as exclusively dark-wake once the awake bytes are unchecked too, otherwise a
   mixed hour would keep looking awake no matter what you filtered.
+- **Show pass-through apps** — present only when a registered pass-through app has
+  traffic in the window. The rows are embedded in the payload but hidden by default, so
+  the stat cards, the bars and the table start out matching the CLI reports; checking
+  the box reveals them in place, and **Reset** puts the box back to hidden.
 
 Two visual cues carry the classification, so a gap is identifiable without cross-referencing
 the database:
@@ -345,6 +349,13 @@ full):
 Every table report names what it hid (`[Pass-through apps excluded: ...]`), so a "missing"
 app is never silently missing; csv and json put that note on stderr so stdout stays
 machine-readable. Raw SQL against `usage.db` still sees everything — only the reports filter.
+
+The HTML dashboard follows the same rule with a twist: its rows are embedded in the
+payload (the toggle could not reveal what was never sent), but every server-rendered
+figure — stat cards, table rows, the active-app count — describes the *hidden* default,
+and a **Show pass-through apps** checkbox in the filter bar flips them back on for one
+look. A pass-through app also keeps its own chart series instead of folding into
+"Other Apps", so revealing it shows exactly its bytes.
 
 ---
 

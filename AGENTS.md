@@ -88,7 +88,7 @@ nettop (30s poll) → collector.py → usage_5m (SQLite, 5-min buckets, per app)
                                   ↳ power_events / gaps (pmset -g log derived, for sleep/wake classification)
 report.py / html_generator.py → read usage_5m via db.py's query_usage_by_{5m,hour,day} → CLI / HTML dashboard
 pause.py → pause_state.json → collector.py loop skips polling while paused (hole, not a label)
-passthrough.py → passthrough.json → report.py drops those apps at report time (rows stay in usage_5m)
+passthrough.py → passthrough.json → report.py drops those apps at report time; html_generator.py embeds them but renders them hidden behind a dashboard toggle (rows stay in usage_5m)
 ```
 
 - `gaps` and `power_events` are **write-only** — the collector inserts into them, and nothing
@@ -161,6 +161,16 @@ Invariants worth keeping:
 - Tests patch `passthrough.DEFAULT_REGISTRY_PATH` (see the module-level `setUpModule` in
   `tests/test_nettally.py`), so a real registry on a dev machine can't leak into report
   assertions.
+- The dashboard hides pass-through rows by **rendering them hidden, never by omitting them
+  from the payload**: the toggle can only reveal what was embedded. So `html_generator.py`
+  keeps pass-through rows in `viewsData`/`tableData` (and gives each its *own* series rather
+  than folding it into "Other Apps", which could not be split apart again), while every
+  server-rendered placeholder (`__TOTAL_*__`, `__ACTIVE_APPS__`, `__TABLE_ROWS__`) is built
+  from the *visible* rows so the default view matches the CLI reports. The template's JS
+  zeroes hidden series in **both** data paths (the 5-minute push in `renderChart` and
+  `buildCombinedDataForGranularity`) — miss one and the bars and the summary disagree.
+  `bucketClassification` deliberately still counts hidden rows (a hidden app must not
+  downgrade a dark-wake bucket to awake).
 
 ## Before you consider a change done
 

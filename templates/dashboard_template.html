@@ -342,6 +342,11 @@
             font-size: 0.78rem;
             margin-left: auto;
         }
+
+        .pass-through-note {
+            color: var(--text-secondary);
+            font-size: 0.78rem;
+        }
     </style>
 </head>
 <body>
@@ -382,6 +387,14 @@
                     <input type="checkbox" id="chk-sleep-wake" checked onchange="applyFilter()"> Post-wake catch-up bursts
                 </label>
             </div>
+        </div>
+        <!-- Hidden by the generator's own JS when no pass-through app is in the
+             window, so an unregistered report carries no dead checkbox. -->
+        <div class="filter-group" id="passThroughGroup">
+            <label class="cls-filter-label">
+                <input type="checkbox" id="chk-passthrough" onchange="setShowPassThrough(this.checked)"> Show pass-through apps
+            </label>
+            <span class="pass-through-note" id="passThroughNote">__PASS_THROUGH_NOTE__</span>
         </div>
         <div class="filter-note">These filters apply to the timeline, the summary and the table.</div>
     </div>
@@ -461,6 +474,15 @@
         const viewsData = __VIEWS_DATA_JSON__;
         const tableData = __TABLE_DATA_JSON__;
         const initiallyExcluded = __CLS_INITIALLY_EXCLUDED__;
+        // Apps registered with `nettally passthrough add` (a tunnel client's
+        // bytes double-count the apps it carries). Their rows are embedded like
+        // every other row -- the toggle reveals them in place -- but the default
+        // reading of the report excludes them, matching the CLI reports.
+        const passThroughNames = __PASS_THROUGH_APPS_JSON__;
+        const passThroughLower = new Set(passThroughNames.map(n => String(n).toLowerCase()));
+        function isPassThrough(name) {
+            return passThroughLower.has(String(name).toLowerCase());
+        }
 
         // Bucket width in seconds per granularity, used to snap the date-range
         // selection onto the axis the active view actually has.
@@ -480,6 +502,7 @@
             granularity: '5m',
             scale: 'linear',       // 'linear' or 'logarithmic' on the y axis
             showEmptyIntervals: true,
+            showPassThrough: false, // pass-through rows are embedded but hidden by default
             start: null,          // naive ms; null means "everything covered"
             end: null,
             search: '',
@@ -570,7 +593,15 @@
                     }
                     return sum;
                 });
-                datasets.push({ label: refDs.label, data: combinedData, backgroundColor: refDs.backgroundColor });
+                // A hidden pass-through series contributes nothing to the bar,
+                // so it is zeroed here -- downstream (the empty-slot rule, the
+                // stripes, the tooltips) then sees exactly what the user sees.
+                const hidden = !state.showPassThrough && isPassThrough(refDs.label);
+                datasets.push({
+                    label: refDs.label,
+                    data: hidden ? labels.map(() => 0) : combinedData,
+                    backgroundColor: refDs.backgroundColor
+                });
             }
 
             // Per-dataset classifications (for stripe/tooltip) are computed in applyFilter(),
@@ -616,7 +647,16 @@
                     }
                 },
                 plugins: {
-                    legend: { labels: { color: '#f8fafc' } },
+                    legend: {
+                        labels: {
+                            color: '#f8fafc',
+                            // A hidden pass-through series would otherwise sit in
+                            // the legend as an entry whose bars are all zero.
+                            filter: function(item) {
+                                return state.showPassThrough || !isPassThrough(item.text);
+                            }
+                        }
+                    },
                     tooltip: {
                         callbacks: {
                             label: function(context) {
@@ -643,6 +683,9 @@
             }
             if (initiallyExcluded.includes('sleep_then_full_wake')) {
                 document.getElementById('chk-sleep-wake').checked = false;
+            }
+            if (passThroughLower.size === 0) {
+                document.getElementById('passThroughGroup').style.display = 'none';
             }
             initDateInputs();
             applyFilter();
@@ -853,6 +896,10 @@
                 const filteredLabels = [];
                 const filteredCls    = [];
                 const filteredDatasets = view.datasets.map(ds => ({ ...ds, data: [] }));
+                // Computed once so the empty-slot rule below sees the plotted
+                // values: a bucket holding only hidden pass-through bytes is a
+                // bucket with nothing to draw, same as one filtered to zero.
+                const hiddenFlags = view.datasets.map(ds => !state.showPassThrough && isPassThrough(ds.label));
 
                 for (let i = 0; i < labels.length; i++) {
                     const at = source[i];
@@ -874,12 +921,12 @@
                     const cls = classKey(view.bucketClassification ? view.bucketClassification[at] : null);
                     // Classification filter: per-row classification must be checked
                     if (!inRange(ms[i]) || !checkedCls.has(cls)) continue;
-                    if (!state.showEmptyIntervals && !hasVisibleTraffic(view.datasets, at)) continue;
+                    if (!state.showEmptyIntervals && !hasVisibleTraffic(view.datasets, at, hiddenFlags)) continue;
 
                     filteredLabels.push(labels[i]);
                     filteredCls.push(cls);
                     for (let j = 0; j < view.datasets.length; j++) {
-                        filteredDatasets[j].data.push(at < 0 ? 0 : view.datasets[j].data[at]);
+                        filteredDatasets[j].data.push(at < 0 || hiddenFlags[j] ? 0 : view.datasets[j].data[at]);
                     }
                 }
 
@@ -979,9 +1026,13 @@
         // empty-interval control asked for the grid, which then puts the time back
         // exactly where it belongs. The summary and the table are untouched: a
         // zero bucket contributes zero to them either way.
-        function hasVisibleTraffic(datasets, index) {
-            for (const ds of datasets) {
-                if (ds.data[index]) return true;
+        //
+        // `hiddenFlags` (optional) marks series the pass-through toggle has
+        // turned off; their bytes do not count as visible traffic either.
+        function hasVisibleTraffic(datasets, index, hiddenFlags) {
+            for (let j = 0; j < datasets.length; j++) {
+                if (hiddenFlags && hiddenFlags[j]) continue;
+                if (datasets[j].data[index]) return true;
             }
             return false;
         }
@@ -1023,6 +1074,14 @@
             renderChart();
         }
 
+        // Revealing pass-through apps changes what the bars, the summary and the
+        // table mean, so it goes through the same single entry point as every
+        // other filter rather than rendering the chart alone.
+        function setShowPassThrough(show) {
+            state.showPassThrough = !!show;
+            applyFilter();
+        }
+
         // ── Table + summary aggregate ──────────────────────────────────────────
         // The table used to be a server-rendered per-app total, which could not
         // follow the filters. Instead every app's series is embedded at 5-minute
@@ -1053,6 +1112,7 @@
             const rows = [];
             for (let a = 0; a < tableData.apps.length; a++) {
                 const name = tableData.apps[a];
+                if (!state.showPassThrough && isPassThrough(name)) continue;
 
                 // Bucket indices arrive delta-encoded, so a single running sum
                 // turns them back into absolute positions on the 5-minute axis.
@@ -1098,7 +1158,11 @@
 
         function renderTable(rows) {
             const tbody = document.getElementById('usageTableBody');
-            const tracked = (tableData && tableData.apps) ? tableData.apps.length : 0;
+            // "Tracked" counts what the current filter can show, so a hidden
+            // pass-through app is not part of the denominator either.
+            const tracked = (tableData && tableData.apps)
+                ? tableData.apps.filter(app => state.showPassThrough || !isPassThrough(app)).length
+                : 0;
 
             if (rows.length === 0) {
                 const message = tracked > 0
@@ -1147,8 +1211,13 @@
                 : checked.length === 0
                     ? 'no traffic types'
                     : checked.join(' + ');
-            if (state.start === null) return 'All recorded data · ' + types;
-            return naiveMsToLabel(state.start) + ' to ' + naiveMsToLabel(state.end) + ' · ' + types;
+            // The headline number is computed from what is visible, so the line
+            // under it says when pass-through apps are part of that (or not).
+            const passThrough = passThroughLower.size === 0
+                ? ''
+                : state.showPassThrough ? ' · pass-through shown' : ' · pass-through hidden';
+            if (state.start === null) return 'All recorded data · ' + types + passThrough;
+            return naiveMsToLabel(state.start) + ' to ' + naiveMsToLabel(state.end) + ' · ' + types + passThrough;
         }
 
         function resetFilter() {
@@ -1157,6 +1226,10 @@
             document.getElementById('chk-awake').checked      = true;
             document.getElementById('chk-dark-wake').checked  = true;
             document.getElementById('chk-sleep-wake').checked = true;
+            // ...but pass-through apps go back to hidden: that is the default
+            // the report was generated to describe.
+            document.getElementById('chk-passthrough').checked = false;
+            state.showPassThrough = false;
             state.search = '';
             document.getElementById('searchInput').value = '';
             applyFilter();

@@ -22,6 +22,7 @@ from db import (
     query_usage_coverage,
     query_usage_totals,
 )
+from passthrough import format_names, resolve_names
 from report import format_bytes, parse_exclude_classes
 
 DEFAULT_HTML_PATH = os.path.expanduser("~/Library/Application Support/NetTally/dashboard.html")
@@ -312,13 +313,27 @@ def generate_html_report(
     days: Optional[int] = None,
     output_path: str = DEFAULT_HTML_PATH,
     exclude_classifications: Optional[list[str]] = None,
+    pass_through_apps: Optional[frozenset[str]] = None,
 ) -> str:
-    """Query usage and render the dashboard HTML to output_path, returning the path."""
+    """Query usage and render the dashboard HTML to output_path, returning the path.
+
+    Pass-through rows are embedded like every other row -- the dashboard hides
+    them behind an off-by-default toggle -- but the server-rendered state
+    (stat cards, table rows, the "Active Apps" count) describes the hidden
+    default, so those placeholders are built from the visible rows only.
+    `pass_through_apps=None` resolves the live registry.
+    """
     cfg = load_config()
     if days is None:
         days = cfg["default_report_days"]
 
     totals = query_usage_totals(db_path, days=days, exclude_classifications=exclude_classifications)
+    pass_through = resolve_names(pass_through_apps)
+    pass_through_lower = {name.lower() for name in pass_through}
+    visible_totals = [r for r in totals if str(r["app_name"]).lower() not in pass_through_lower]
+    hidden_names = [
+        str(r["app_name"]) for r in totals if str(r["app_name"]).lower() in pass_through_lower
+    ]
     records_5m = query_usage_by_5m(
         db_path, days=days, exclude_classifications=exclude_classifications
     )
@@ -329,13 +344,13 @@ def generate_html_report(
     )
     coverage = query_usage_coverage(db_path, days=days)
 
-    grand_in = sum(r["total_bytes_in"] or 0 for r in totals)
-    grand_out = sum(r["total_bytes_out"] or 0 for r in totals)
-    grand_total = sum(r["total_bytes"] or 0 for r in totals)
+    grand_in = sum(r["total_bytes_in"] or 0 for r in visible_totals)
+    grand_out = sum(r["total_bytes_out"] or 0 for r in visible_totals)
+    grand_total = sum(r["total_bytes"] or 0 for r in visible_totals)
 
-    if totals:
+    if visible_totals:
         table_rows = []
-        for r in totals:
+        for r in visible_totals:
             table_rows.append(f"""
                 <tr>
                     <td><strong>{r["app_name"]}</strong></td>
@@ -350,7 +365,16 @@ def generate_html_report(
         table_html = '<tr><td colspan="5" style="text-align:center; color: var(--text-secondary); padding: 24px;">No network usage records found for this period.</td></tr>'
 
     top_apps_limit = cfg.get("html_top_apps_limit", 8)
-    top_apps = [r["app_name"] for r in totals[:top_apps_limit]] if totals else []
+    top_apps = [r["app_name"] for r in visible_totals[:top_apps_limit]]
+    # Pass-through apps keep their own series instead of folding into "Other
+    # Apps": the toggle has to be able to reveal them in place, and a series
+    # that was aggregated away at generation time cannot be split back apart.
+    chart_apps = top_apps + [name for name in hidden_names if name not in top_apps]
+    # The series palette deliberately ends in the muted gray the "Other Apps"
+    # series uses (the builders read colors[-1]); the vivid colors before it
+    # are there so the appended pass-through series don't reuse another app's
+    # color (with the default limit of 8, the first pass-through lands on
+    # index 8).
     colors = [
         "#38bdf8",
         "#818cf8",
@@ -360,14 +384,17 @@ def generate_html_report(
         "#34d399",
         "#fbbf24",
         "#a3e635",
+        "#f97316",
+        "#22d3ee",
+        "#e879f9",
         "#94a3b8",
     ]
 
     # Build layered views for hourly/daily: master aligned labels + per-classification layers
     views_data = {
-        "5m": build_view_dataset(records_5m, "timestamp_5m", top_apps, colors),
-        "hourly": build_layered_view(layered_rows, "hourly", top_apps, colors),
-        "daily": build_layered_view(layered_rows, "daily", top_apps, colors),
+        "5m": build_view_dataset(records_5m, "timestamp_5m", chart_apps, colors),
+        "hourly": build_layered_view(layered_rows, "hourly", chart_apps, colors),
+        "daily": build_layered_view(layered_rows, "daily", chart_apps, colors),
     }
     table_data = build_table_data(
         layered_rows,
@@ -405,8 +432,13 @@ def generate_html_report(
     html_content = html_content.replace("__TOTAL_TRANSFER__", format_bytes(grand_total))
     html_content = html_content.replace("__TOTAL_IN__", format_bytes(grand_in))
     html_content = html_content.replace("__TOTAL_OUT__", format_bytes(grand_out))
-    html_content = html_content.replace("__ACTIVE_APPS__", str(len(totals)))
+    html_content = html_content.replace("__ACTIVE_APPS__", str(len(visible_totals)))
     html_content = html_content.replace("__TABLE_ROWS__", table_html)
+    html_content = html_content.replace("__PASS_THROUGH_APPS_JSON__", json.dumps(hidden_names))
+    html_content = html_content.replace(
+        "__PASS_THROUGH_NOTE__",
+        f"Excluded by default: {format_names(hidden_names)}" if hidden_names else "",
+    )
     html_content = html_content.replace("__VIEWS_DATA_JSON__", json.dumps(views_data))
     html_content = html_content.replace("__TABLE_DATA_JSON__", json.dumps(table_data))
     html_content = html_content.replace(

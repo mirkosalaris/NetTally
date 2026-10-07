@@ -1015,6 +1015,128 @@ class TestHtmlTablePayload(unittest.TestCase):
         self.assertNotIn("__VIEWS_DATA_JSON__", content)
 
 
+class TestPassThroughDashboardToggle(unittest.TestCase):
+    """The dashboard embeds pass-through rows but must describe the hidden default."""
+
+    PASS_THROUGH = "GlobalProtect VPN"
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.db_path = os.path.join(self.temp_dir.name, "toggle.db")
+        init_db(self.db_path)
+        self.day = datetime.date.today().isoformat()
+        # Eight non-pass-through apps that fill the default top-8 list, so the
+        # tiny pass-through app would fold into "Other Apps" if the generator
+        # partitioned on totals alone.
+        for i, size in enumerate((8000, 7000, 6000, 5000, 4000, 3000, 2000, 1000), start=1):
+            record_usage_deltas(self.db_path, f"{self.day} 10:05", self.day, {f"App{i}": (size, 0)})
+        record_usage_deltas(
+            self.db_path, f"{self.day} 10:05", self.day, {self.PASS_THROUGH: (10, 5)}
+        )
+        # The pass-through app's only other bucket is a dark-wake one: hiding
+        # the rows must not change how the bucket itself is classified.
+        record_usage_deltas(
+            self.db_path,
+            f"{self.day} 10:10",
+            self.day,
+            {self.PASS_THROUGH: (10, 5)},
+            gap_classification="dark_wake_only",
+        )
+
+    def _payloads(self, name="toggle.html", **kwargs):
+        out = os.path.join(self.temp_dir.name, name)
+        path = generate_html_report(self.db_path, days=30, output_path=out, **kwargs)
+        with open(path, encoding="utf-8") as f:
+            content = f.read()
+        return (
+            extract_json_var(content, "viewsData"),
+            extract_json_var(content, "tableData"),
+            extract_json_var(content, "passThroughNames"),
+            content,
+        )
+
+    def test_hidden_rows_stay_embedded_with_their_own_series(self):
+        views, table, names, _ = self._payloads(pass_through_apps=frozenset({self.PASS_THROUGH}))
+
+        # The toggle can only reveal what was embedded, so the payload keeps
+        # every app -- but the pass-through app must own a series instead of
+        # being aggregated into "Other Apps", which could not be split apart
+        # again at render time.
+        self.assertEqual(names, [self.PASS_THROUGH])
+        self.assertIn(self.PASS_THROUGH, table["apps"])
+        labels = [ds["label"] for ds in views["5m"]["datasets"]]
+        self.assertIn(self.PASS_THROUGH, labels)
+        self.assertNotIn(chartjs_html_generator.OTHER_APP_LABEL, labels)
+        gp = next(ds for ds in views["5m"]["datasets"] if ds["label"] == self.PASS_THROUGH)
+        # The palette's muted gray (#94a3b8) is reserved for "Other Apps"; a
+        # vivid color keeps the pass-through series from impersonating it.
+        self.assertNotEqual(gp["backgroundColor"], "#94a3b8")
+        for view_key in ("hourly", "daily"):
+            for layer, layer_view in views[view_key]["layers"].items():
+                with self.subTest(view=view_key, layer=layer):
+                    self.assertIn(self.PASS_THROUGH, [ds["label"] for ds in layer_view["datasets"]])
+
+    def test_server_rendered_state_describes_the_hidden_default(self):
+        _, _, _, content = self._payloads(pass_through_apps=frozenset({self.PASS_THROUGH}))
+
+        # 8000+...+1000 = 36000 visible bytes; the pass-through app's 30 are
+        # embedded but excluded from the headline figures and table rows.
+        self.assertIn(format_bytes(36000), content)
+        self.assertNotIn(format_bytes(36030), content)
+        self.assertNotIn(f"<strong>{self.PASS_THROUGH}</strong>", content)
+        self.assertIn("<strong>App8</strong>", content)
+        self.assertIn(f"Excluded by default: {self.PASS_THROUGH}", content)
+
+    def test_bucket_classification_still_counts_hidden_rows(self):
+        views, _, _, _ = self._payloads(pass_through_apps=frozenset({self.PASS_THROUGH}))
+        shown, _, _, _ = self._payloads("shown.html", pass_through_apps=frozenset())
+
+        # bucketClassification is computed from the raw rows on purpose: a
+        # hidden app must not be able to downgrade a dark-wake bucket to awake.
+        self.assertIn("dark_wake_only", views["5m"]["bucketClassification"])
+        self.assertEqual(views["5m"]["bucketClassification"], shown["5m"]["bucketClassification"])
+
+    def test_toggle_markup_and_wiring(self):
+        # Pure client-side behaviour: the generator only has to guarantee the
+        # control exists, starts off, and calls the handlers the dashboard
+        # defines -- same contract as the axis controls.
+        _, _, _, content = self._payloads(pass_through_apps=frozenset({self.PASS_THROUGH}))
+
+        self.assertIn('id="chk-passthrough" onchange="setShowPassThrough(this.checked)"', content)
+        self.assertNotIn('id="chk-passthrough" checked', content)
+        self.assertIn("function setShowPassThrough(", content)
+        self.assertIn("state.showPassThrough = false", content)
+        self.assertIn("function isPassThrough(", content)
+        # A hidden series must not sit in the legend as an all-zero entry.
+        self.assertIn("isPassThrough(item.text)", content)
+        # The filter group disappears entirely when nothing is registered.
+        self.assertIn('id="passThroughGroup"', content)
+        self.assertIn("passThroughLower.size === 0", content)
+        # Summary, table and selection line all follow the toggle.
+        self.assertIn("isPassThrough(name)", content)
+        self.assertIn("isPassThrough(app)", content)
+        self.assertIn("pass-through hidden", content)
+        self.assertIn("chk-passthrough').checked = false", content)
+        # The empty-slot rule must not keep a bucket whose only bytes are hidden.
+        self.assertIn("hasVisibleTraffic(view.datasets, at, hiddenFlags)", content)
+
+    def test_all_placeholders_are_substituted(self):
+        registered = self._payloads(pass_through_apps=frozenset({self.PASS_THROUGH}))
+        for _, _, _, content in (registered, self._payloads("plain.html")):
+            self.assertEqual(re.findall(r"__[A-Z][A-Z0-9_]*__", content), [])
+
+    def test_no_registered_apps_carries_no_toggle_state(self):
+        # Default registry (patched to an empty file for the whole module):
+        # nothing hidden, so the dashboard must not claim otherwise.
+        _, _, names, content = self._payloads("none.html")
+
+        self.assertEqual(names, [])
+        self.assertNotIn("Excluded by default", content)
+        # The group markup exists but window.onload hides it on this payload.
+        self.assertIn("passThroughLower.size === 0", content)
+
+
 class TestInstallerUserFileHandling(unittest.TestCase):
     """install.sh must never silently clobber a hand-edited config.json/app_map.json."""
 
