@@ -41,10 +41,14 @@ else
     echo "Removing application code and logs (preserving database at $APP_DIR/usage.db)..."
     rm -f "$APP_DIR/collector.py" "$APP_DIR/db.py" "$APP_DIR/config.py" "$APP_DIR/app_folder.py" \
           "$APP_DIR/report.py" "$APP_DIR/html_generator.py" "$APP_DIR/pause.py" \
+          "$APP_DIR/passthrough.py" \
           "$APP_DIR/nettally" "$APP_DIR/install.sh" "$APP_DIR/uninstall.sh" \
           "$APP_DIR/com.nettally.daemon.plist" "$APP_DIR/python_path"
     # Drop any active pause too, so a later reinstall cannot come up still paused.
     rm -f "$APP_DIR/pause_state.json"
+    # passthrough.json stays (like usage.db and config.json): it describes the
+    # preserved data, so a reinstall keeps reporting the same way. --purge above
+    # removes it with everything else.
     rm -rf "$APP_DIR/templates"
     rm -rf "$LOG_DIR"
     echo "(Tip: Pass --purge to uninstall.sh if you also wish to delete usage.db)"

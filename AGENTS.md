@@ -21,12 +21,12 @@ itself is version-controlled and hosted on GitHub (origin), and commits are push
   (the LaunchAgent plist's `ProgramArguments` points at `collector.py` there).
 - Once installed, the `nettally` CLI on your PATH also runs from there: `install.sh` copies
   `collector.py`, `db.py`, `config.py`, `app_folder.py`, `report.py`, `html_generator.py`,
-  `pause.py`, `templates/` (`dashboard_template.html`, the vendored `chart.umd.js`, and its
-  license), the `nettally` wrapper, `install.sh`/`uninstall.sh`, and the plist template
-  into Application Support, and symlinks `nettally` onto your PATH (into `~/.local/bin`
-  — created and added to `$PATH` in your shell profile if not already there). Deleting the
-  source folder after install is fine. (See `docs/decisions/0006-...`; it resolves the open
-  question in `0005`.)
+  `pause.py`, `passthrough.py`, `templates/` (`dashboard_template.html`, the vendored
+  `chart.umd.js`, and its license), the `nettally` wrapper, `install.sh`/`uninstall.sh`, and
+  the plist template into Application Support, and symlinks `nettally` onto your PATH (into
+  `~/.local/bin` — created and added to `$PATH` in your shell profile if not already there).
+  Deleting the source folder after install is fine. (See `docs/decisions/0006-...`; it
+  resolves the open question in `0005`.)
 - `nettally install` on PATH resolves to the **deployed** copy of `install.sh`, where
   `SCRIPT_DIR` is already `APP_DIR`, so its first `cp` copies each file onto itself and
   `set -e` aborts the run. It is not an upgrade or repair path — only the source tree's
@@ -35,8 +35,9 @@ itself is version-controlled and hosted on GitHub (origin), and commits are push
   relative to its own (symlink-resolved) location, so it keeps running the workspace copies of
   `report.py` / `html_generator.py` / `collector.py` directly.
 - **Consequence: after editing any of `collector.py`, `db.py`, `config.py`, `app_folder.py`,
-  `report.py`, `html_generator.py`, `pause.py`, `templates/dashboard_template.html`, or
-  `templates/chart.umd.js`, you must re-run `./install.sh` for the deployed daemon **and**
+  `report.py`, `html_generator.py`, `pause.py`, `passthrough.py`,
+  `templates/dashboard_template.html`, or `templates/chart.umd.js`, you must re-run
+  `./install.sh` for the deployed daemon **and**
   the PATH CLI to pick up the change.** Restarting the LaunchAgent without re-running
   `install.sh` just relaunches the old copy. The workspace `./nettally` sees edits
   immediately. Only the source tree can do this: the Application Support copy is the
@@ -87,6 +88,7 @@ nettop (30s poll) → collector.py → usage_5m (SQLite, 5-min buckets, per app)
                                   ↳ power_events / gaps (pmset -g log derived, for sleep/wake classification)
 report.py / html_generator.py → read usage_5m via db.py's query_usage_by_{5m,hour,day} → CLI / HTML dashboard
 pause.py → pause_state.json → collector.py loop skips polling while paused (hole, not a label)
+passthrough.py → passthrough.json → report.py drops those apps at report time (rows stay in usage_5m)
 ```
 
 - `gaps` and `power_events` are **write-only** — the collector inserts into them, and nothing
@@ -137,6 +139,29 @@ collector to observe both ends of the pause, which silently drops the row if lau
 the daemon in between — and incomplete audit data is worse than none. `collector.log` and
 `nettally status` cover it instead.
 
+## Pass-Through Apps (`passthrough.py`)
+
+`nettally passthrough add|remove|list` maintains `passthrough.json` beside `config.json`:
+apps (usually VPN clients) whose bytes double-count other apps' traffic. Reports exclude
+them **at read time** — the rows stay in `usage_5m` unchanged, so flagging is retroactive
+and reversible; `collector.py` and `db.py` deliberately know nothing about this file. The
+design alternatives (collection-time skip, a DB column, `db.py` filtering) and why they lost
+are in `docs/decisions/0007-passthrough-apps-excluded-at-report-time.md` — read it before
+moving exclusion anywhere else.
+
+Invariants worth keeping:
+
+- Matching is case-insensitive against the already-folded `app_name` reports display, so
+  `add PanGPS` and `add "GlobalProtect VPN"` are the same entry (`app_map.json` folds first).
+- `pass_through_apps=None` means "resolve the live registry"; an explicit empty `frozenset()`
+  means "include everything" (`report --include-passthrough`). Don't collapse the two.
+- Every exclusion is announced (table footer / csv+json stderr note), so a "missing" app in a
+  report is never silently missing.
+- The registry survives a plain `uninstall` (like `usage.db`); only `--purge` removes it.
+- Tests patch `passthrough.DEFAULT_REGISTRY_PATH` (see the module-level `setUpModule` in
+  `tests/test_nettally.py`), so a real registry on a dev machine can't leak into report
+  assertions.
+
 ## Before you consider a change done
 
 1. Run the tests: `python3 -m unittest discover -s tests` (repo root), or `make test`. All of
@@ -149,8 +174,9 @@ the daemon in between — and incomplete audit data is worse than none. `collect
    of silently growing `ignore` lists or adding `# type: ignore` (both are kept minimal
    deliberately).
 3. If you touched any of the deployed files (`collector.py` / `db.py` / `config.py` /
-   `app_folder.py` / `report.py` / `html_generator.py` / `pause.py` / `templates/`): tell the
-   user (or run, if you can) `./install.sh` — see the deployed-copy section above.
+   `app_folder.py` / `report.py` / `html_generator.py` / `pause.py` / `passthrough.py` /
+   `templates/`): tell the user (or run, if you can) `./install.sh` — see the deployed-copy
+   section above.
 4. If you touched anything sleep/wake/gap-classification related, verify against real data if
    at all possible (a crafted repro or a real `usage.db` snapshot), not just unit tests with
    mocked `pmset` output. This codebase's nastiest bugs were all "looks right in isolation, but

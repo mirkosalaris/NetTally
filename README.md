@@ -15,6 +15,7 @@ A lightweight, local-only background daemon and CLI utility for macOS that recor
 - **Smart Process Folding**: Groups helper processes (e.g., `Google Chrome Helper`, `Claude Helper`, `Code Helper`) into clean app names using configurable rules in `app_map.json`.
 - **Sleep/Dark-Wake Classification**: Retroactively classifies polling gaps caused by sleep or dark-wake via `pmset` logs, so post-wake byte spikes aren't misread as a single instant of real traffic, and labels 5-minute buckets accordingly.
 - **Pausing**: Stop recording on demand — indefinitely or with a timeout (`nettally pause --for 2h`). A timed pause resumes by itself, even across a reboot.
+- **Pass-Through Apps**: Flag VPN clients (or anything else whose bytes mirror other apps') with `nettally passthrough add`, and reports stop counting the double-counted traffic.
 - **CLI & Interactive HTML Reports**: Query history via terminal tables, CSV, JSON, or launch a multi-resolution interactive HTML chart dashboard.
 
 ---
@@ -303,6 +304,50 @@ whichever database the collector is pointed at.
 
 ---
 
+## Pass-Through Apps (VPNs and other tunnel clients)
+
+A VPN client double-counts. nettop attributes every tunnelled byte both to the app that
+generated it *and* to the VPN process that carries the same payload out of the machine, so
+totals that include the VPN roughly double the real traffic — a tunnel that carries most of
+the traffic can show up as nearly half of everything ever recorded, almost exactly the sum of
+all the other apps.
+
+NetTally cannot tell on its own which processes behave this way, so you register them:
+
+```bash
+./nettally passthrough add PanGPS      # folds to "GlobalProtect VPN" via app_map.json
+./nettally passthrough add "GlobalProtect VPN"   # same entry, other spelling
+./nettally passthrough list
+./nettally passthrough remove "GlobalProtect VPN"
+```
+
+`add` accepts the name exactly as reports display it, or a raw `nettop` process name —
+either way it is folded through `app_map.json` first, and one registry entry covers every
+process that folds into that name. A name that was never recorded is still registered (you
+may be pre-registering an app before its first run), with a warning and a close-match
+suggestion if the database has something similar.
+
+The registry is a small JSON file (`~/Library/Application Support/NetTally/passthrough.json`),
+hand-editable, and it survives `nettally uninstall` — like `usage.db`, it describes the data a
+reinstall keeps. Only `nettally uninstall --purge` deletes it. `./nettally status` lists what
+is registered.
+
+**Exclusion happens when you report, not when the collector records.** The raw rows stay in
+`usage.db` untouched, so registering a pass-through app is *retroactive* (the next report
+corrects all of recorded history) and *reversible* (`remove` brings the numbers back in
+full):
+
+```bash
+./nettally report                        # pass-through apps excluded, with a footer note
+./nettally report --include-passthrough  # ...and back again for this run
+```
+
+Every table report names what it hid (`[Pass-through apps excluded: ...]`), so a "missing"
+app is never silently missing; csv and json put that note on stderr so stdout stays
+machine-readable. Raw SQL against `usage.db` still sees everything — only the reports filter.
+
+---
+
 ## System Architecture
 
 ```
@@ -312,6 +357,7 @@ whichever database the collector is pointed at.
   ├── config.json       # Polling / reporting configuration
   ├── python_path       # Python interpreter pinned at install time
   ├── pause_state.json  # Present only while tracking is paused (see "Pausing Tracking")
+  ├── passthrough.json  # Pass-through apps excluded from reports (see "Pass-Through Apps")
   ├── collector.py      # Background nettop poller & delta engine
   ├── db.py             # SQLite database interface with 5m/hourly/daily query helpers
   ├── app_folder.py     # Helper process canonicalization logic

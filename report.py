@@ -19,6 +19,7 @@ from db import (
     query_usage_by_hour,
     query_usage_totals,
 )
+from passthrough import exclude_rows, format_names
 
 
 def format_bytes(num_bytes: int) -> str:
@@ -78,17 +79,37 @@ def _emit_json_or_csv(
     return False
 
 
+def _exclude_passthrough(
+    results: list[dict],
+    pass_through_apps: Optional[frozenset[str]],
+    fmt: str,
+) -> tuple[list[dict], list[str]]:
+    """Apply the pass-through registry; return (kept rows, hidden names).
+
+    The table report carries its own note in the footer; csv and json keep
+    stdout pure data, so their note goes to stderr, where a terminal still
+    shows it and a pipe never sees it.
+    """
+    kept, matched = exclude_rows(results, pass_through_apps)
+    if matched and fmt in ("csv", "json"):
+        print(f"[Pass-through apps excluded: {format_names(matched)}]", file=sys.stderr)
+    return kept, matched
+
+
 def _print_report(
     title: str,
     headers: list[str],
     rows: list[list[str]],
     exclude_classifications: Optional[list[str]] = None,
     footer: Optional[str] = None,
+    pass_through_apps: Optional[list[str]] = None,
 ) -> None:
-    """Print a titled report with an optional exclusion note and footer line."""
+    """Print a titled report with optional exclusion notes and a footer line."""
     print(f"\n--- {title} ---")
     if exclude_classifications:
         print(f"[Excluded classifications: {', '.join(exclude_classifications)}]")
+    if pass_through_apps:
+        print(f"[Pass-through apps excluded: {format_names(pass_through_apps)}]")
     _print_table(headers, rows)
     if footer:
         print(footer)
@@ -121,11 +142,17 @@ def generate_totals_report(
     app_filter: Optional[str],
     fmt: str,
     exclude_classifications: Optional[list[str]] = None,
+    pass_through_apps: Optional[frozenset[str]] = None,
 ) -> None:
-    """Emit the per-app totals report (table/csv/json)."""
+    """Emit the per-app totals report (table/csv/json).
+
+    `pass_through_apps=None` resolves the live registry (excluded by default);
+    an explicit empty frozenset includes everything (`--include-passthrough`).
+    """
     results = query_usage_totals(
         db_path, days=days, app_filter=app_filter, exclude_classifications=exclude_classifications
     )
+    results, pass_through_matched = _exclude_passthrough(results, pass_through_apps, fmt)
 
     if _emit_json_or_csv(
         results,
@@ -194,6 +221,7 @@ def generate_totals_report(
         rows,
         exclude_classifications,
         footer,
+        pass_through_apps=pass_through_matched,
     )
 
 
@@ -203,11 +231,13 @@ def generate_by_day_report(
     app_filter: Optional[str],
     fmt: str,
     exclude_classifications: Optional[list[str]] = None,
+    pass_through_apps: Optional[frozenset[str]] = None,
 ) -> None:
     """Emit the daily breakdown report (table/csv/json)."""
     results = query_usage_by_day(
         db_path, days=days, app_filter=app_filter, exclude_classifications=exclude_classifications
     )
+    results, pass_through_matched = _exclude_passthrough(results, pass_through_apps, fmt)
 
     if _emit_json_or_csv(
         results,
@@ -236,7 +266,13 @@ def generate_by_day_report(
         ]
         for r in results
     ]
-    _print_report("NetTally Usage Report (Daily Breakdown)", headers, rows, exclude_classifications)
+    _print_report(
+        "NetTally Usage Report (Daily Breakdown)",
+        headers,
+        rows,
+        exclude_classifications,
+        pass_through_apps=pass_through_matched,
+    )
 
 
 def generate_by_hour_report(
@@ -245,11 +281,13 @@ def generate_by_hour_report(
     app_filter: Optional[str],
     fmt: str,
     exclude_classifications: Optional[list[str]] = None,
+    pass_through_apps: Optional[frozenset[str]] = None,
 ) -> None:
     """Emit the hourly breakdown report (table/csv/json)."""
     results = query_usage_by_hour(
         db_path, days=days, app_filter=app_filter, exclude_classifications=exclude_classifications
     )
+    results, pass_through_matched = _exclude_passthrough(results, pass_through_apps, fmt)
 
     if _emit_json_or_csv(
         results,
@@ -279,7 +317,11 @@ def generate_by_hour_report(
         for r in results
     ]
     _print_report(
-        "NetTally Usage Report (Hourly Breakdown)", headers, rows, exclude_classifications
+        "NetTally Usage Report (Hourly Breakdown)",
+        headers,
+        rows,
+        exclude_classifications,
+        pass_through_apps=pass_through_matched,
     )
 
 
@@ -289,11 +331,13 @@ def generate_by_5m_report(
     app_filter: Optional[str],
     fmt: str,
     exclude_classifications: Optional[list[str]] = None,
+    pass_through_apps: Optional[frozenset[str]] = None,
 ) -> None:
     """Emit the 5-minute breakdown report (table/csv/json)."""
     results = query_usage_by_5m(
         db_path, days=days, app_filter=app_filter, exclude_classifications=exclude_classifications
     )
+    results, pass_through_matched = _exclude_passthrough(results, pass_through_apps, fmt)
 
     if _emit_json_or_csv(
         results,
@@ -323,7 +367,11 @@ def generate_by_5m_report(
         for r in results
     ]
     _print_report(
-        "NetTally Usage Report (5-Minute Block Breakdown)", headers, rows, exclude_classifications
+        "NetTally Usage Report (5-Minute Block Breakdown)",
+        headers,
+        rows,
+        exclude_classifications,
+        pass_through_apps=pass_through_matched,
     )
 
 
@@ -368,6 +416,11 @@ def main() -> None:
         metavar="CLASS",
         help="Comma-separated gap classifications to exclude: dark_wake_only, sleep_then_full_wake (e.g. --exclude dark_wake_only,sleep_then_full_wake)",
     )
+    parser.add_argument(
+        "--include-passthrough",
+        action="store_true",
+        help="Include apps registered with `nettally passthrough add` (excluded by default: e.g. VPN clients double-count other apps' traffic)",
+    )
     args = parser.parse_args()
 
     db_path = get_db_path(args.db)
@@ -381,6 +434,10 @@ def main() -> None:
     # Parse --exclude into a validated classification list (shared with html_generator)
     exclude_classifications = parse_exclude_classes(parser, args.exclude)
 
+    # None (default) lets each generator resolve the live registry; an explicit
+    # empty set includes everything, which is what the flag asks for.
+    pass_through_apps: Optional[frozenset[str]] = frozenset() if args.include_passthrough else None
+
     if args.by_5m:
         generate_by_5m_report(
             db_path,
@@ -388,6 +445,7 @@ def main() -> None:
             app_filter=args.app,
             fmt=args.format,
             exclude_classifications=exclude_classifications,
+            pass_through_apps=pass_through_apps,
         )
     elif args.by_hour:
         generate_by_hour_report(
@@ -396,6 +454,7 @@ def main() -> None:
             app_filter=args.app,
             fmt=args.format,
             exclude_classifications=exclude_classifications,
+            pass_through_apps=pass_through_apps,
         )
     elif args.by_day:
         generate_by_day_report(
@@ -404,6 +463,7 @@ def main() -> None:
             app_filter=args.app,
             fmt=args.format,
             exclude_classifications=exclude_classifications,
+            pass_through_apps=pass_through_apps,
         )
     else:
         generate_totals_report(
@@ -412,6 +472,7 @@ def main() -> None:
             app_filter=args.app,
             fmt=args.format,
             exclude_classifications=exclude_classifications,
+            pass_through_apps=pass_through_apps,
         )
 
 

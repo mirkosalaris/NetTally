@@ -23,7 +23,9 @@ from unittest.mock import MagicMock, patch
 
 import collector
 import html_generator as chartjs_html_generator
+import passthrough
 import pause
+import report
 from app_folder import AppFolder
 from collector import check_dark_wake_still_active, detect_and_classify_gap, parse_nettop_proc_id
 from config import DEFAULTS, load_config
@@ -49,7 +51,12 @@ from pause import (
     read_pause_state,
     write_pause_state,
 )
-from report import format_bytes, generate_totals_report, parse_exclude_classes
+from report import (
+    format_bytes,
+    generate_by_day_report,
+    generate_totals_report,
+    parse_exclude_classes,
+)
 
 
 def extract_json_var(content: str, var_name: str):
@@ -63,6 +70,34 @@ def extract_json_var(content: str, var_name: str):
     if end == -1:
         raise AssertionError(f"unterminated {var_name} payload in generated HTML")
     return json.loads(content[start:end])
+
+
+_registry_patcher = None
+_registry_tempdir = None
+
+
+def setUpModule():
+    """Point the pass-through registry at a throwaway path.
+
+    The installed ~/Library/.../passthrough.json on a dev machine may already
+    name live apps; a test that forgets an explicit registry must still see an
+    empty one, or report output assertions become machine-dependent.
+    """
+    global _registry_patcher, _registry_tempdir
+    _registry_tempdir = tempfile.mkdtemp(prefix="nettally-passthrough-")
+    _registry_patcher = patch.object(
+        passthrough,
+        "DEFAULT_REGISTRY_PATH",
+        os.path.join(_registry_tempdir, "passthrough.json"),
+    )
+    _registry_patcher.start()
+
+
+def tearDownModule():
+    if _registry_patcher is not None:
+        _registry_patcher.stop()
+    if _registry_tempdir is not None:
+        shutil.rmtree(_registry_tempdir, ignore_errors=True)
 
 
 class TestNettopProcIdParsing(unittest.TestCase):
@@ -1861,6 +1896,330 @@ class TestClearProcessStates(unittest.TestCase):
         clear_process_states(self.db)
         clear_process_states(self.db)
         self.assertEqual(load_process_states(self.db), {})
+
+
+class TestPassThroughRegistry(unittest.TestCase):
+    """passthrough.json round-trip: fold on add, tolerate broken files, atomic writes."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.path = os.path.join(self.tmp, "passthrough.json")
+        self.app_map = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app_map.json"
+        )
+
+    def test_missing_file_is_an_empty_registry(self):
+        self.assertEqual(passthrough.read_registry(self.path), frozenset())
+
+    def test_add_then_read_round_trip(self):
+        changed, canonical = passthrough.add_name("GlobalProtect VPN", self.path)
+        self.assertTrue(changed)
+        self.assertEqual(canonical, "GlobalProtect VPN")
+        self.assertEqual(passthrough.read_registry(self.path), frozenset({"GlobalProtect VPN"}))
+
+    def test_add_folds_raw_nettop_names(self):
+        changed, canonical = passthrough.add_name("PanGPS", self.path, config_path=self.app_map)
+        self.assertTrue(changed)
+        self.assertEqual(canonical, "GlobalProtect VPN")
+        self.assertEqual(passthrough.read_registry(self.path), frozenset({"GlobalProtect VPN"}))
+
+    def test_add_is_idempotent_case_insensitively(self):
+        passthrough.add_name("GlobalProtect VPN", self.path)
+        changed, _ = passthrough.add_name("globalprotect vpn", self.path)
+        self.assertFalse(changed)
+        self.assertEqual(passthrough.read_registry(self.path), frozenset({"GlobalProtect VPN"}))
+
+    def test_remove_accepts_the_raw_spelling(self):
+        passthrough.add_name("PanGPS", self.path, config_path=self.app_map)
+        removed = passthrough.remove_name("PanGPS", self.path, config_path=self.app_map)
+        self.assertEqual(removed, "GlobalProtect VPN")
+        self.assertEqual(passthrough.read_registry(self.path), frozenset())
+
+    def test_remove_unknown_returns_none(self):
+        self.assertIsNone(passthrough.remove_name("NotRegistered", self.path))
+
+    def test_corrupt_file_reads_as_empty(self):
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write("{ not json")
+        with self.assertLogs("passthrough", level="WARNING"):
+            self.assertEqual(passthrough.read_registry(self.path), frozenset())
+
+    def test_wrong_shape_reads_as_empty(self):
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump({"pass_through_apps": "nope"}, f)
+        with self.assertLogs("passthrough", level="WARNING"):
+            self.assertEqual(passthrough.read_registry(self.path), frozenset())
+
+    def test_writes_leave_no_temp_file_behind(self):
+        passthrough.add_name("GlobalProtect VPN", self.path)
+        self.assertEqual(os.listdir(self.tmp), ["passthrough.json"])
+
+    def test_exclude_rows_drops_matches_case_insensitively(self):
+        rows = [
+            {"app_name": "GlobalProtect VPN", "bytes_in": 700},
+            {"app_name": "OneDrive", "bytes_in": 150},
+        ]
+        kept, matched = passthrough.exclude_rows(rows, frozenset({"globalprotect vpn"}))
+        self.assertEqual([r["app_name"] for r in kept], ["OneDrive"])
+        self.assertEqual(matched, ["GlobalProtect VPN"])
+
+    def test_exclude_rows_resolves_the_live_registry_by_default(self):
+        passthrough.add_name("GlobalProtect VPN", self.path)
+        rows = [{"app_name": "GlobalProtect VPN"}, {"app_name": "OneDrive"}]
+        with patch.object(passthrough, "DEFAULT_REGISTRY_PATH", self.path):
+            kept, matched = passthrough.exclude_rows(rows, None)
+        self.assertEqual([r["app_name"] for r in kept], ["OneDrive"])
+        self.assertEqual(matched, ["GlobalProtect VPN"])
+
+    def test_exclude_rows_reports_only_names_actually_present(self):
+        rows = [{"app_name": "OneDrive"}]
+        kept, matched = passthrough.exclude_rows(rows, frozenset({"GlobalProtect VPN", "OneDrive"}))
+        self.assertEqual(kept, [])
+        self.assertEqual(matched, ["OneDrive"])
+
+    def test_exclude_rows_without_any_registry_keeps_everything(self):
+        rows = [{"app_name": "GlobalProtect VPN"}]
+        kept, matched = passthrough.exclude_rows(rows, frozenset())
+        self.assertEqual(kept, rows)
+        self.assertEqual(matched, [])
+
+
+class TestPassThroughReportExclusion(unittest.TestCase):
+    """Reports hide pass-through apps by default and can be told to include them."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.db_path = os.path.join(self.temp_dir.name, "usage.db")
+        init_db(self.db_path)
+        self.registry = os.path.join(self.temp_dir.name, "passthrough.json")
+        day_str = datetime.date.today().isoformat()
+        record_usage_deltas(
+            self.db_path,
+            f"{day_str} 10:00",
+            day_str,
+            {"GlobalProtect VPN": (700, 300), "OneDrive": (100, 50)},
+        )
+        record_usage_deltas(self.db_path, f"{day_str} 10:05", day_str, {"OneDrive": (10, 5)})
+        with open(self.registry, "w", encoding="utf-8") as f:
+            json.dump({"pass_through_apps": ["GlobalProtect VPN"]}, f)
+
+    def test_table_report_excludes_and_notes_the_footer(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            generate_totals_report(
+                self.db_path,
+                days=None,
+                app_filter=None,
+                fmt="table",
+                pass_through_apps=frozenset({"GlobalProtect VPN"}),
+            )
+        text = out.getvalue()
+        self.assertIn("[Pass-through apps excluded: GlobalProtect VPN]", text)
+        # Exactly one occurrence: the note, not also a data row.
+        self.assertEqual(text.count("GlobalProtect VPN"), 1)
+        self.assertIn("OneDrive", text)
+        self.assertIn("across 1 apps", text)
+        # Grand total must be the surviving app's bytes only: 150 + 15.
+        self.assertIn("Total 165 B across 1 apps", text)
+
+    def test_table_report_defaults_to_the_live_registry(self):
+        out = io.StringIO()
+        with patch.object(passthrough, "DEFAULT_REGISTRY_PATH", self.registry):
+            with contextlib.redirect_stdout(out):
+                generate_totals_report(self.db_path, days=None, app_filter=None, fmt="table")
+        self.assertEqual(out.getvalue().count("GlobalProtect VPN"), 1)
+        self.assertIn("across 1 apps", out.getvalue())
+
+    def test_explicit_empty_set_includes_everything(self):
+        out = io.StringIO()
+        with patch.object(passthrough, "DEFAULT_REGISTRY_PATH", self.registry):
+            with contextlib.redirect_stdout(out):
+                generate_totals_report(
+                    self.db_path,
+                    days=None,
+                    app_filter=None,
+                    fmt="table",
+                    pass_through_apps=frozenset(),
+                )
+        text = out.getvalue()
+        self.assertNotIn("Pass-through apps excluded", text)
+        self.assertIn("GlobalProtect VPN", text)
+        self.assertIn("across 2 apps", text)
+
+    def test_csv_excludes_and_notes_stderr(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            generate_totals_report(
+                self.db_path,
+                days=None,
+                app_filter=None,
+                fmt="csv",
+                pass_through_apps=frozenset({"GlobalProtect VPN"}),
+            )
+        rows = list(csv.reader(io.StringIO(out.getvalue())))
+        names = [row[0] for row in rows[1:]]
+        self.assertEqual(names, ["OneDrive"])
+        self.assertIn("[Pass-through apps excluded: GlobalProtect VPN]", err.getvalue())
+        # The note must not leak into the machine-readable stream.
+        self.assertNotIn("Pass-through", out.getvalue())
+
+    def test_json_excludes_and_notes_stderr(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            generate_totals_report(
+                self.db_path,
+                days=None,
+                app_filter=None,
+                fmt="json",
+                pass_through_apps=frozenset({"GlobalProtect VPN"}),
+            )
+        payload = json.loads(out.getvalue())
+        self.assertEqual([row["app_name"] for row in payload], ["OneDrive"])
+        self.assertIn("[Pass-through apps excluded: GlobalProtect VPN]", err.getvalue())
+
+    def test_daily_report_excludes_too(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            generate_by_day_report(
+                self.db_path,
+                days=None,
+                app_filter=None,
+                fmt="table",
+                pass_through_apps=frozenset({"GlobalProtect VPN"}),
+            )
+        text = out.getvalue()
+        self.assertEqual(text.count("GlobalProtect VPN"), 1)
+        self.assertIn("OneDrive", text)
+
+    def _run_main(self, *extra):
+        argv = ["report.py", "--db", self.db_path, "--format", "json", *extra]
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(sys, "argv", argv):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                report.main()
+        return out.getvalue(), err.getvalue()
+
+    def test_main_excludes_by_default(self):
+        with patch.object(passthrough, "DEFAULT_REGISTRY_PATH", self.registry):
+            out, err = self._run_main()
+        payload = json.loads(out)
+        self.assertEqual([row["app_name"] for row in payload], ["OneDrive"])
+        self.assertIn("[Pass-through apps excluded", err)
+
+    def test_main_include_passthrough_flag_restores_it(self):
+        with patch.object(passthrough, "DEFAULT_REGISTRY_PATH", self.registry):
+            out, err = self._run_main("--include-passthrough")
+        payload = json.loads(out)
+        self.assertEqual(
+            sorted(row["app_name"] for row in payload), ["GlobalProtect VPN", "OneDrive"]
+        )
+        self.assertNotIn("[Pass-through apps excluded", err)
+
+
+class TestPassThroughCli(unittest.TestCase):
+    """`nettally passthrough add|remove|list` as a real subprocess, like pause.py's CLI."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.registry = os.path.join(self.tmp, "passthrough.json")
+        self.db = os.path.join(self.tmp, "usage.db")
+        init_db(self.db)
+        self.root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def _run(self, *args):
+        return subprocess.run(
+            [sys.executable, "passthrough.py", *args, "--registry", self.registry],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_add_list_remove_cycle(self):
+        result = self._run("add", "GlobalProtect VPN")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Registered", result.stdout)
+        self.assertEqual(passthrough.read_registry(self.registry), frozenset({"GlobalProtect VPN"}))
+
+        result = self._run("list")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("GlobalProtect VPN", result.stdout)
+
+        result = self._run("remove", "GlobalProtect VPN")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Removed", result.stdout)
+        self.assertEqual(passthrough.read_registry(self.registry), frozenset())
+
+        result = self._run("list")
+        self.assertIn("No pass-through apps registered", result.stdout)
+
+    def test_add_twice_is_a_no_op(self):
+        self._run("add", "GlobalProtect VPN")
+        result = self._run("add", "GlobalProtect VPN")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Already registered", result.stdout)
+        self.assertEqual(len(passthrough.read_registry(self.registry)), 1)
+
+    def test_add_suggests_close_recorded_names(self):
+        day_str = datetime.date.today().isoformat()
+        record_usage_deltas(self.db, f"{day_str} 10:00", day_str, {"Google Chrome": (100, 0)})
+        result = self._run("add", "Google Chrom", "--db", self.db)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Closest recorded apps", result.stdout)
+        self.assertIn("Google Chrome", result.stdout)
+        self.assertEqual(passthrough.read_registry(self.registry), frozenset({"Google Chrom"}))
+
+    def test_add_with_no_database_still_registers(self):
+        missing = os.path.join(self.tmp, "not-there.db")
+        result = self._run("add", "Some VPN", "--db", missing)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Registered", result.stdout)
+        self.assertEqual(passthrough.read_registry(self.registry), frozenset({"Some VPN"}))
+        self.assertFalse(os.path.exists(missing))
+
+    def test_remove_unknown_says_so(self):
+        result = self._run("remove", "NotRegistered")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Not registered", result.stdout)
+
+    def test_quiet_list_prints_only_names(self):
+        result = self._run("list", "--quiet")
+        self.assertEqual(result.stdout, "")
+        self._run("add", "GlobalProtect VPN")
+        result = self._run("list", "--quiet")
+        self.assertEqual(result.stdout.strip(), "GlobalProtect VPN")
+
+
+class TestPassThroughIsDeployedWithTheRestOfTheRuntime(unittest.TestCase):
+    """report.py imports passthrough.py, so a deploy without it cannot run reports."""
+
+    def setUp(self):
+        self.root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def _read(self, name):
+        with open(os.path.join(self.root, name), encoding="utf-8") as f:
+            return f.read()
+
+    def test_installer_copies_passthrough_py(self):
+        self.assertIn('cp "$SCRIPT_DIR/passthrough.py" "$APP_DIR/"', self._read("install.sh"))
+
+    def test_uninstaller_removes_passthrough_py(self):
+        self.assertIn("$APP_DIR/passthrough.py", self._read("uninstall.sh"))
+
+    def test_uninstaller_keeps_the_registry(self):
+        # Like usage.db, the registry describes preserved data and must survive
+        # a plain uninstall; only --purge's rm -rf removes it.
+        self.assertNotIn("$APP_DIR/passthrough.json", self._read("uninstall.sh"))
+
+    def test_wrapper_exposes_the_passthrough_command(self):
+        wrapper = self._read("nettally")
+        self.assertIn('passthrough.py" "$@"', wrapper)
+        self.assertIn("  passthrough ", wrapper)
+
+    def test_wrapper_status_lists_registered_apps_quietly(self):
+        self.assertIn('passthrough.py" list --quiet', self._read("nettally"))
 
 
 class TestPauseIsDeployedWithTheRestOfTheRuntime(unittest.TestCase):

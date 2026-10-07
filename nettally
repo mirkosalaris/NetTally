@@ -55,10 +55,21 @@ case "$1" in
         shift
         $PYTHON "$SCRIPT_DIR/pause.py" resume "$@"
         ;;
+    passthrough)
+        shift
+        $PYTHON "$SCRIPT_DIR/passthrough.py" "$@"
+        ;;
     status)
         echo "=== NetTally Service Status ==="
         launchctl list 2>/dev/null | grep -E "com\.nettally\.daemon" || echo "Service is not currently loaded in launchctl."
         $PYTHON "$SCRIPT_DIR/pause.py" state 2>/dev/null || echo "Tracking state unknown (pause.py unavailable)."
+        # Only worth a line when something is registered, so the default
+        # status output stays byte-for-byte what it was.
+        PT="$($PYTHON "$SCRIPT_DIR/passthrough.py" list --quiet 2>/dev/null || true)"
+        if [ -n "$PT" ]; then
+            echo ""
+            echo "Pass-through apps (excluded from reports): $PT"
+        fi
         LOG_DIR="$HOME/Library/Logs/NetTally"
         if [ -s "$LOG_DIR/collector.log" ]; then
             echo ""
@@ -100,6 +111,7 @@ case "$1" in
         echo "  status      Check background service status, pause state, and recent log output"
         echo "  pause       Stop recording usage (indefinitely, or --for 2h / --for 45m / --for 1h30m)"
         echo "  resume      Start recording usage again immediately"
+        echo "  passthrough Register pass-through apps excluded from reports (add/remove/list)"
         echo "  run-once    Execute a single nettop polling cycle for testing"
         echo "  run-daemon  Start collector daemon manually in foreground"
         echo "  install     Install LaunchAgent background service"
