@@ -1086,7 +1086,7 @@ class TestPassThroughDashboardToggle(unittest.TestCase):
         self.assertNotIn(format_bytes(36030), content)
         self.assertNotIn(f"<strong>{self.PASS_THROUGH}</strong>", content)
         self.assertIn("<strong>App8</strong>", content)
-        self.assertIn(f"Excluded by default: {self.PASS_THROUGH}", content)
+        self.assertIn(f"[{self.PASS_THROUGH}]", content)
 
     def test_bucket_classification_still_counts_hidden_rows(self):
         views, _, _, _ = self._payloads(pass_through_apps=frozenset({self.PASS_THROUGH}))
@@ -1132,7 +1132,7 @@ class TestPassThroughDashboardToggle(unittest.TestCase):
         _, _, names, content = self._payloads("none.html")
 
         self.assertEqual(names, [])
-        self.assertNotIn("Excluded by default", content)
+        self.assertIn('id="passThroughNote"></span>', content)
         # The group markup exists but window.onload hides it on this payload.
         self.assertIn("passThroughLower.size === 0", content)
 

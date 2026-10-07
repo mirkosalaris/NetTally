@@ -437,7 +437,7 @@ def generate_html_report(
     html_content = html_content.replace("__PASS_THROUGH_APPS_JSON__", json.dumps(hidden_names))
     html_content = html_content.replace(
         "__PASS_THROUGH_NOTE__",
-        f"Excluded by default: {format_names(hidden_names)}" if hidden_names else "",
+        f"[{format_names(hidden_names)}]" if hidden_names else "",
     )
     html_content = html_content.replace("__VIEWS_DATA_JSON__", json.dumps(views_data))
     html_content = html_content.replace("__TABLE_DATA_JSON__", json.dumps(table_data))
