@@ -15,6 +15,28 @@ misread as one instant of real traffic. The data pipeline is entirely on-device:
 lives in a local SQLite database, is never uploaded, and there is no telemetry. The source code
 itself is version-controlled and hosted on GitHub (origin), and commits are pushed there.
 
+## Privacy: this repository is public — no personal information, ever
+
+This repo is pushed to GitHub. Everything that lands in it — commit messages, README,
+`docs/`, code comments, test fixtures, sample configs — must never contain details about
+the user, their machine, or their setup. This is a hard privacy constraint, not a style
+preference. Never write:
+
+- **Machine-bound observations**: "on this machine", "my setup", "as measured here", or
+  any phrasing that presents a local observation as a general fact.
+- **Real usage numbers**: byte totals, percentages, app counts, GiB/GB figures, or any
+  other figure taken from the user's `usage.db` or a real report. Use round, clearly
+  illustrative numbers in examples instead.
+- **Identity or paths**: the user's username, real name, email, or any `/Users/...` home
+  path (use `~` or a placeholder like `/Users/<name>/...`).
+- **Software inventory**: what's installed on the user's machine, unless framed as an
+  example.
+
+Commit messages are public history too — apply the same rules when writing or amending
+them. When rewriting history to scrub a violation, create a recovery branch first and tell
+the user when it's safe to delete. If an existing file or commit violates this rule,
+**stop and report it to the user before pushing anything.** When in doubt, leave it out.
+
 ## Deployed copy: Application Support is the standalone runtime, not a shadow copy
 
 - The always-on background collector runs from `~/Library/Application Support/NetTally/`
@@ -191,6 +213,9 @@ Invariants worth keeping:
    at all possible (a crafted repro or a real `usage.db` snapshot), not just unit tests with
    mocked `pmset` output. This codebase's nastiest bugs were all "looks right in isolation, but
    the real device log timing broke the assumption."
+5. Before committing, re-read the diff (and the commit message) against the privacy rule
+   above: no real usage numbers, no `/Users/...` paths or identity, no machine-bound
+   observations, no inventory of the user's installed software.
 
 ## Decision log
 
